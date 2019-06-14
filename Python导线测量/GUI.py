@@ -2,6 +2,10 @@
 # import #####################################################
 import wx
 import myvar
+from matplotlib import pyplot
+from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg
+
+from matplotlib.figure import Figure
 # 函数 #######################################################
 
 # 辅助类 定义 #################################################
@@ -155,14 +159,17 @@ class MyWindows(wx.Frame):
         self.SetTitle('导线测量模拟题')
         #
         print('step 01')
-        # self.菜单栏()
+        self.菜单栏()
+        print('step 01.5')
         self.split_window()
         print('step 02')
         #
+        #self.Bind(wx.EVT_PAINT, self.OnPaint) 
+        
         self.Center()
         self.Show()
-        # self.setsize()
-
+        self.test()
+        self.d2() 
     def split_window(self):
         '''把面板分割为4个区域，分别设置每个区域内容'''
         # 分离器对象添加到顶层帧。
@@ -202,7 +209,7 @@ class MyWindows(wx.Frame):
                   self.change, self.__splitter2)
         self.Bind(wx.EVT_SPLITTER_SASH_POS_CHANGING,
                   self.change, self.__splitter3)
-
+        print('split_window end')
     def panel1_set(self):
         '''设置1号区域的内容。1号区域为导线角度观测记录表'''
         self.panel1.SetScrollbars(1, 1, 400, 400)  # 窗口或区域尺寸变动数字无需修改
@@ -223,33 +230,84 @@ class MyWindows(wx.Frame):
         self.panel2.SetSizerAndFit(self.grid2)
         self.panel2.SetSize(self.size2())
     def panel3_set(self,  mystr='test123456789'):
-        #self.panel3 = wx.Panel(self.__splitter2)
+        self.grid3 =wx.GridBagSizer(vgap=5, hgap=5)
         # 添加控件#
-        #self.rb1 = wx.RadioButton(self.panel1, label='样式1')
-        #self.rb2 = wx.RadioButton(self.panel1, label='样式2')
-        #self.grid1.Add(self.rb1, pos=(0, 0))
-        #self.grid1.Add(self.rb2, pos=(0, 1))
-        self.grid3 = wx.BoxSizer(wx.VERTICAL)
-        读取数据 = wx.Button(self.panel3, label=mystr, style=wx.EXPAND)
-        self.grid3.Add(读取数据, 1, wx.ALL | wx.EXPAND, 5)
-        读取数据2 = wx.Button(self.panel3, label=mystr+'-2', style=wx.EXPAND)
-        self.grid3.Add(读取数据2, 1, flag=wx.ALIGN_CENTER)
+        self.rb1 = wx.RadioButton(self.panel3, label='样式1')
+        self.rb2 = wx.RadioButton(self.panel3, label='样式2')
+        self.grid3.Add(self.rb1, pos=(0, 0))
+        self.grid3.Add(self.rb2, pos=(0, 1))
+        
+        self.bt1 = wx.Button(self.panel3, label=mystr)
+        self.grid3.Add(self.bt1, pos=(9,0),border= 5)
+        self.bt2 = wx.Button(self.panel3, label=mystr+'-2', style=wx.EXPAND)
+        self.grid3.Add(self.bt2, pos=(9,1))
 
+        #self.d2()
         self.panel3.SetSizerAndFit(self.grid3)
-        self.grid3.SetSizeHints(self.panel3)
+        self.panel3.SetSize(self.size3())
         print('panel3', self.panel3.Size)
 
     def panel4_set(self):
         '''8y7test'''
+        def draw():
+            dc = wx.WindowDC(self.panel4) 
+            brush = wx.Brush("white")  
+            dc.SetBackground(brush)  
+            #dc.Clear() 
+            print('dc')
+            pen = wx.Pen(wx.Colour(0,0,255)) 
+            dc.SetPen(pen) 
+            dc.DrawLine(100,50,350,50) 
+            dc.SetBrush(wx.Brush(wx.Colour(0,255,0), wx.CROSS_HATCH)) 
+            dc.DrawRectangle(100, 100, 500, 600) 
+      
+
         self.panel4.SetScrollbars(1, 1, 400, 400)  # 窗口或区域尺寸变动数字无需修改
         self.grid4 = wx.GridBagSizer(5, 5)
         self.平差表 = 平差表(self.grid4, self.panel4, 0, 0)
         #self.panel4.SetSizer(self.grid4)
-        
         self.panel4.SetSizerAndFit(self.grid4)
         self.panel4.SetSize(self.size4())
 
-
+    def OnPaint(self, event): 
+      dc = wx.PaintDC(self) 
+      brush = wx.Brush("white")  
+      dc.SetBackground(brush)  
+      dc.Clear() 
+        
+      # dc.DrawBitmap(wx.Bitmap("python.jpg"),10,10,True) 
+      color = wx.Colour(255,0,0)
+      b = wx.Brush(color) 
+		
+      dc.SetBrush(b) 
+      dc.DrawCircle(300,125,50) 
+      dc.SetBrush(wx.Brush(wx.Colour(255,255,255))) 
+      dc.DrawCircle(300,125,30) 
+		
+      font = wx.Font(18, wx.ROMAN, wx.ITALIC, wx.NORMAL) 
+      dc.SetFont(font) 
+      dc.DrawText("Hello wxPython",200,10) 
+		
+      pen = wx.Pen(wx.Colour(0,0,255)) 
+      dc.SetPen(pen) 
+      dc.DrawLine(200,50,350,50) 
+      dc.SetBrush(wx.Brush(wx.Colour(0,255,0), wx.CROSS_HATCH)) 
+      dc.DrawRectangle(380, 15, 90, 60) 
+      
+    def d2(self):
+        #self.panel = wx.Panel(self)
+        # subplots默认返回一个Figure和一行一列的子图对象
+        self.fig=Figure()
+        self.axe = self.fig.add_subplot(111)
+        # 使用FigureCanvasWxAgg来创建Figure的背景画布
+        self.canvas = FigureCanvasWxAgg(self.panel3, -1, self.fig)
+        #print('000',doc(self.grid3.GetItem()))
+        self.grid3.Add(self.canvas,pos=(3,0))
+        # 绘制一条普通的折线图
+        self.x_data = [1, 2, 4,3,4,5,6,7,8,9]
+        self.y_data = [2, 5, 1,5,9,8,6,4,8,1]
+        self.axe.plot(self.x_data, self.y_data)
+        print('d2 end')
 
     def 菜单栏(self):
         '''设置菜单栏'''
@@ -332,7 +390,7 @@ class MyWindows(wx.Frame):
                 print(cstr, ct.Size)
             except:
                 print(cstr, '不存在')
-        print('--'*9)
+        print('++'*9)
         p(self.panel1, 'panel1')
         p(self.panel2, 'panel2')
         p(self.panel3, 'panel3')
@@ -344,7 +402,23 @@ class MyWindows(wx.Frame):
         p(self.__splitter3, 's3')
         print(self.Size)
         # self.setsize()
-
+    def test(self):
+        def p(ct, cstr="",sstr=''):
+            try:
+                print(cstr, sstr,ct.Size)
+            except:
+                print(cstr, '不存在')
+        print('--'*9)
+        p(self.panel1, 'panel1',self.size1())
+        p(self.panel2, 'panel2',self.size2())
+        p(self.panel3, 'panel3',self.size3())
+        p(self.panel12, 'panel12',self.sp3size())
+        p(self.panel4, 'panel4',self.size4())
+        p(self.panel123, 'panel123',self.sp2size())
+        p(self.__splitter1, 's1',self.size0())
+        p(self.__splitter2, 's2',self.sp2size())
+        p(self.__splitter3, 's3',self.sp3size())
+        print(self.Size)
     def setsize(self):
         self.__splitter2.SetSize(sp2size())
         self.__splitter3.SetSize(sp3size())
@@ -356,7 +430,7 @@ class MyWindows(wx.Frame):
         self.panel123.SetSize(sp2size())
         pass
 
-    def size0(self): return (self.Size[0]-16, self.Size[1]-39)
+    def size0(self): return (self.Size[0]-16, self.Size[1]-39-20)
     def size4(self): return (self.size0()[0], self.size4_h)
     def size3(self): return (self.size3_w, self.size0()[1]-self.size4()[1])
     def size2(self): return (self.size0()[0]-self.size3()[0], self.size2_h)
