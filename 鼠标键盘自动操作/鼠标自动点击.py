@@ -213,9 +213,10 @@ def w(*mystr):
 import time
 n=10
 mylist=list(d.values())
-kc=['012','147']
-for i in kc:
-    for j in range(n,len(d)):
+kc=['012','142'，'157','143','041','194']
+l2=['00','01','02','03']
+for j in range(n,len(d)):
+    for i in kc:
         id=mylist[j][0].replace('*****',i+'01')
         name=mylist[j][1]
         print(time.localtime(time.clock()),i,j,id,name)
