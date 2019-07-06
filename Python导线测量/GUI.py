@@ -2,9 +2,16 @@
 # import #####################################################
 import wx
 import myvar
+from matplotlib import pyplot
+from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg
+
+from matplotlib.figure import Figure
 # 函数 #######################################################
 
 # 辅助类 定义 #################################################
+w1=50#列宽1
+w2=120#列宽1
+bw = -3 #边框距离
 观测记录 = {'测站': 'O',
         '目标_后视': 'H',
         '目标_前视': 'Q',
@@ -17,31 +24,26 @@ import myvar
         '半测回_盘左': '0',
         '半测回_盘右': '0',
         '一测回角度': '0'}
-textctrl = lambda p, mystr='': wx.TextCtrl(
-    p, value=mystr, style=wx.TE_READONLY | wx.TE_CENTER)
+def textctrl(panel, mystr,width=110):
+     return wx.TextCtrl(panel, value=mystr,size=(width,25) ,style= wx.TE_CENTER)
 
-
-class jd_table(object):
+class 角度观测记录表(object):
     '''角度观测记录表'''
 
     def __init__(self, grid, panel, 记录=观测记录):
+        '''000'''
+        self.标题 = wx.TextCtrl(panel, -1, "导线观测记录表",  style=wx.TE_READONLY)
+        
         # 测站 目标 盘左 盘右 2c 半测回 1测回
-        self.测站 = textctrl(panel, '测站')
-        #    panel, '测站',  style=wx.TE_READONLY | wx.TE_CENTER)
-        self.目标 = textctrl(panel, '目标')
-        self.读数 = wx.TextCtrl(
-            panel, -1, '观测读数',  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.盘左 = wx.TextCtrl(
-            panel, -1, '盘左',  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.盘右 = wx.TextCtrl(
-            panel, -1, '盘右',  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.C2 = wx.TextCtrl(
-            panel, -1, '2C', style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.半测回 = wx.TextCtrl(panel, -1, '半测回角度',
-                               style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.一测回 = wx.TextCtrl(panel, -1, '一测回角度',
-                               style=wx.TE_READONLY | wx.TE_CENTRE)
-        bw = -3
+        self.测站 = textctrl(panel, '测站',w1)
+        self.目标 = textctrl(panel, '目标',w1)
+        self.读数 =textctrl(panel, '观测读数',  w2)
+        self.盘左 = textctrl(panel, '盘左',  w2)
+        self.盘右 = textctrl(panel, '盘右',  w2)
+        self.C2 = textctrl(panel,  '2C', w1)
+        self.半测回 =textctrl(panel, '半测回角度',w2)
+        self.一测回 =textctrl(panel, '一测回角度',w2)
+        
         grid.Add(self.测站, pos=(1, 0), span=(2, 1),
                  flag=wx.ALL | wx.EXPAND, border=bw)
         grid.Add(self.目标, pos=(1, 1), span=(2, 1),
@@ -56,41 +58,29 @@ class jd_table(object):
                  flag=wx.ALL | wx.EXPAND, border=bw)
         grid.Add(self.一测回, pos=(1, 6), span=(2, 1),
                  flag=wx.ALL | wx.EXPAND, border=bw)
-
+        
+        grid.Add(self.标题, pos=(0, 0), span=(1, myvar.导线边数),flag=wx.ALL | wx.EXPAND,border=bw)
         self.jdds = []  # 角度读数
         for i in range(myvar.导线边数):
             self.jdds.append(jd(grid, panel, 3+i*2, 记录))
-
 
 class jd(object):
     '''一测站观测记录'''
 
     def __init__(self, grid, panel, x, 记录: dict = 观测记录):
-        self.测站 = wx.TextCtrl(
-            panel, -1, 记录["测站"],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.目标_后视 = wx.TextCtrl(
-            panel, -1, 记录['目标_后视'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.目标_前视 = wx.TextCtrl(
-            panel, -1, 记录['目标_前视'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.盘左_后视 = wx.TextCtrl(
-            panel, -1, 记录['盘左_后视'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.盘右_后视 = wx.TextCtrl(
-            panel, -1, 记录['盘右_后视'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.盘左_前视 = wx.TextCtrl(
-            panel, -1, 记录['盘左_前视'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.盘右_前视 = wx.TextCtrl(
-            panel, -1, 记录['盘右_前视'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.C2_盘左 = wx.TextCtrl(
-            panel, -1, 记录['2C_盘左'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.C2_盘右 = wx.TextCtrl(
-            panel, -1, 记录['2C_盘右'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.半测回_盘左 = wx.TextCtrl(
-            panel, -1, 记录['半测回_盘左'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.半测回_盘右 = wx.TextCtrl(
-            panel, -1, 记录['半测回_盘右'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        self.一测回角度 = wx.TextCtrl(
-            panel, -1, 记录['一测回角度'],  style=wx.TE_READONLY | wx.TE_CENTRE)
-        bw = -3
+        self.测站 = textctrl(panel,  记录["测站"],  w1)
+        self.目标_后视 = textctrl(panel, 记录['目标_后视'], w1)
+        self.目标_前视 = textctrl(  panel,  记录['目标_前视'],  w1)
+        self.盘左_后视 = textctrl(panel,记录['盘左_后视'],  w2)
+        self.盘右_后视 = textctrl(panel,记录['盘右_后视'],  w2)
+        self.盘左_前视 = textctrl(panel,记录['盘左_前视'],  w2)
+        self.盘右_前视 = textctrl(panel,记录['盘右_前视'], w2)
+        self.C2_盘左 = textctrl( panel,  记录['2C_盘左'], w1)
+        self.C2_盘右 = textctrl( panel,  记录['2C_盘右'],  w1)
+        self.半测回_盘左 =textctrl(panel,记录['半测回_盘左'], w2)
+        self.半测回_盘右=textctrl(panel,记录['半测回_盘右'], w2)
+        self.一测回角度 =textctrl(panel,记录['一测回角度'], w2)
+        #bw = -3
         grid.Add(self.测站, pos=(x, 0), span=(2, 1),
                  flag=wx.ALL | wx.EXPAND, border=bw)
 
@@ -116,29 +106,38 @@ class jd(object):
 
 
 class bian(object):
-    def __init__(self, grid, panel, y, 边长读数=边长读数):
+    def __init__(self, grid, panel, x, y, 边长读数=边长读数):
         self.边名 = textctrl(panel, 边长读数[0])
+        print('bian',self.边名.Size)
         self.边长 = [textctrl(panel, 边长读数[1]),
                    textctrl(panel, 边长读数[2]),
                    textctrl(panel, 边长读数[3]),
                    textctrl(panel, 边长读数[4])]
         self.平均边长 = textctrl(panel, 边长读数[5])
         bw = -3
-        grid.Add(self.边名, pos=(0, y), flag=wx.ALL | wx.EXPAND, border=bw)
-        grid.Add(self.边长[0], pos=(1, y), flag=wx.ALL | wx.EXPAND, border=bw)
-        grid.Add(self.边长[1], pos=(2, y), flag=wx.ALL | wx.EXPAND, border=bw)
-        grid.Add(self.边长[2], pos=(3, y), flag=wx.ALL | wx.EXPAND, border=bw)
-        grid.Add(self.边长[3], pos=(4, y), flag=wx.ALL | wx.EXPAND, border=bw)
-        grid.Add(self.平均边长, pos=(5, y), flag=wx.ALL | wx.EXPAND, border=bw)
-
+        grid.Add(self.边名, pos=(x+0, y), flag=wx.ALL | wx.EXPAND, border=bw)
+        grid.Add(self.边长[0], pos=(x+1, y), flag=wx.ALL | wx.EXPAND, border=bw)
+        grid.Add(self.边长[1], pos=(x+2, y), flag=wx.ALL | wx.EXPAND, border=bw)
+        grid.Add(self.边长[2], pos=(x+3, y), flag=wx.ALL | wx.EXPAND, border=bw)
+        grid.Add(self.边长[3], pos=(x+4, y), flag=wx.ALL | wx.EXPAND, border=bw)
+        grid.Add(self.平均边长, pos=(x+5, y), flag=wx.ALL | wx.EXPAND, border=bw)
 
 class bian_table(object):
     def __init__(self, grid, panel):
         self.bcds = []  # 边长读数
+        tc = wx.TextCtrl(panel, -1, ' 导线边长记录表', style=wx.TE_READONLY)
+        grid.Add(tc, pos=(0, 0),  span=(1, myvar.导线边数),
+                 flag=wx.ALL | wx.EXPAND, border=-5)
         for i in range(myvar.导线边数):
-            self.bcds.append(bian(grid, panel, i, 边长读数))
+            self.bcds.append(bian(grid, panel, 1, i, 边长读数))
 # 主界面定义 ###################################################
 
+class 平差表(object):
+    def __init__(self, grid, panel, x, y, mystr='test-str'):
+        for i in range(12):
+            for j in range(15):
+                grid.Add(wx.TextCtrl(panel, -1, mystr +
+                                     str(i)+'-'+str(j)), pos=(i, j))
 
 class MyWindows(wx.Frame):
 
@@ -150,113 +149,168 @@ class MyWindows(wx.Frame):
         control : 控件 \n
         pos : 控件位置,第几行第几列,从0开始\n
         span : 控件跨越的行数和列数\n'''
-        self.w=1000
-        self.h=700
-        self.w_draw=400
-        self.h_height=500
-        super(MyWindows, self).__init__(None, size=(1000, 700))
+        self.w1 = 1000  # 窗口宽度
+        self.h1 = 800  # 窗口高度
+        self.size4_h = 300
+        self.size3_w = 300
+        self.size2_h = 200
+
+        super(MyWindows, self).__init__(None, size=(self.w1, self.h1))
         self.SetTitle('导线测量模拟题')
-        # self.MenuBar=wx.MenuBar()
+        #
+        print('step 01')
         self.菜单栏()
+        print('step 01.5')
         self.split_window()
+        print('step 02')
+        #
+        #self.Bind(wx.EVT_PAINT, self.OnPaint) 
+        
         self.Center()
         self.Show()
-
+        self.test()
+        self.d2() 
     def split_window(self):
-        '''面板分割'''
+        '''把面板分割为4个区域，分别设置每个区域内容'''
         # 分离器对象添加到顶层帧。
         # 一个布局管理器，拥有两个子窗口,子窗口大小可以通过拖动它们之间的界限来动态变化。
 
         self.__splitter1 = wx.SplitterWindow(
-            self, -1, style=wx.SP_BORDER)  # 把面板分为123和4
-        self.panel4_set()
-        self.panel123 = wx.Panel(self.__splitter1, -1, size=(1000, self.h_height))
-        self.__splitter1.SplitHorizontally(self.panel123, self.panel4)
+            self, style=wx.SP_3DBORDER, size=self.size0())  # 把面板分为123和4
+        self.panel4 = wx.ScrolledWindow(
+            self.__splitter1, style=wx.SB_HORIZONTAL)
+        self.panel123 = wx.Panel(self.__splitter1, style=wx.SB_HORIZONTAL)
+        self.__splitter1.SplitHorizontally(
+            self.panel123, self.panel4, self.sp2size()[1])  # 上窗口，下窗口分割线位置
 
-
-        splitter2 = wx.SplitterWindow(
-            self.panel123, -1, style=wx.SP_BORDER, size=(self.w, self.h_height))  # 把面板分为12和3
-        self.panel3 = wx.Panel(splitter2, -1, size=(self.w_draw, self.h_height))
-        self.panel12 = wx.Panel(splitter2, -1, size=(self.w-self.w_draw, self.h_height))
-        splitter2.SplitVertically(self.panel12, self.panel3)
-
+        self.__splitter2 = wx.SplitterWindow(
+            self.panel123, style=wx.SP_3D,size=self.sp2size())  # 把面板分为12和3
+        self.panel3 = wx.Panel(self.__splitter2, style=wx.SB_HORIZONTAL)
+        self.panel12 = wx.Panel(self.__splitter2, style=wx.SB_HORIZONTAL)
+        self.__splitter2.SplitVertically(
+            self.panel12, self.panel3, self.sp3size()[0])
 
         self.__splitter3 = wx.SplitterWindow(
-            self.panel12, -1, size=(self.w-self.w_draw, self.h_height))  # 把面板分为1和2
+            self.panel12, -1, style=wx.SP_BORDER,size=self.sp3size())  # 把面板分为1和2
+        self.panel1 = wx.ScrolledWindow(self.__splitter3, style=wx.SB_VERTICAL)
+        self.panel2 = wx.ScrolledWindow(self.__splitter3, style=wx.SB_VERTICAL)
+        self.__splitter3.SplitHorizontally(
+            self.panel1, self.panel2, self.size1()[1])
+
+        print('panelsize', self.panel1.Size)
+        print('panel4size', self.panel4.Size)
         self.panel1_set()
         self.panel2_set()
-        self.__splitter3.SplitHorizontally(self.panel1, self.panel2)
-        #右侧窗口###################################################
-
-        # self.test(self.panel1,'p1')
-        self.test(self.panel3, 'p3')
-
-        # 右侧窗口添加内容
-        
-        
-        ###########################################################
-        # splitter1.SplitVertically(self.panel_left, self.panel_right)
-        # self.panel_left.SetSizerAndFit(self.grid_left)
-        # self.panel4.SetSizerAndFit(grid4)
-
+        self.panel3_set()
+        self.panel4_set()
+        self.Bind(wx.EVT_SPLITTER_SASH_POS_CHANGING,
+                  self.change, self.__splitter1)
+        self.Bind(wx.EVT_SPLITTER_SASH_POS_CHANGING,
+                  self.change, self.__splitter2)
+        self.Bind(wx.EVT_SPLITTER_SASH_POS_CHANGING,
+                  self.change, self.__splitter3)
+        print('split_window end')
     def panel1_set(self):
-        '''0'''
-        self.panel1 = wx.ScrolledWindow(
-            self.__splitter3, -1, style=wx.SB_VERTICAL)  # , size=(500, 150))
-        self.panel1.SetScrollbars(1, 1, 400, 400)
-        # 添加控件#
-        self.rb1 = wx.RadioButton(self.panel1, label='样式1')
-        self.rb2 = wx.RadioButton(self.panel1, label='样式2')
-        self.grid1 = wx.GridBagSizer(5, 5)
-        self.grid1.Add(self.rb1, pos=(0, 0))
-        self.grid1.Add(self.rb2, pos=(0, 1))
-        self.panel1_ctrls = jd_table(self.grid1, self.panel1)
-
+        '''设置1号区域的内容。1号区域为导线角度观测记录表'''
+        self.panel1.SetScrollbars(1, 1, 400, 400)  # 窗口或区域尺寸变动数字无需修改
+        self.grid1 = wx.GridBagSizer(vgap=5, hgap=5)
+        self.角度观测记录表 = 角度观测记录表(self.grid1, self.panel1)
         # 结束
         self.panel1.SetSizerAndFit(self.grid1)
+        self.panel1.SetSize(self.size1())
 
     def panel2_set(self):
         '''设置panel2的控件'''
-        self.panel2 = wx.ScrolledWindow(
-            self.__splitter3, -1, style=wx.SB_VERTICAL)  # , size=(500, 150))
-        self.panel2.SetScrollbars(1, 1, 800, 800)
+        #self.panel2 = wx.ScrolledWindow(self.__splitter3, style=wx.SB_VERTICAL)
+        self.panel2.SetScrollbars(1, 1, 400, 400)
         # 添加控件#
         self.grid2 = wx.GridBagSizer(6, 5)
         self.panel2_ctrls = bian_table(self.grid2, self.panel2)
-
         # 结束
         self.panel2.SetSizerAndFit(self.grid2)
+        self.panel2.SetSize(self.size2())
+    def panel3_set(self,  mystr='test123456789'):
+        self.grid3 =wx.GridBagSizer(vgap=5, hgap=5)
+        # 添加控件#
+        self.rb1 = wx.RadioButton(self.panel3, label='样式1')
+        self.rb2 = wx.RadioButton(self.panel3, label='样式2')
+        self.grid3.Add(self.rb1, pos=(0, 0))
+        self.grid3.Add(self.rb2, pos=(0, 1))
+        
+        self.bt1 = wx.Button(self.panel3, label=mystr)
+        self.grid3.Add(self.bt1, pos=(9,0),border= 5)
+        self.bt2 = wx.Button(self.panel3, label=mystr+'-2', style=wx.EXPAND)
+        self.grid3.Add(self.bt2, pos=(9,1))
+
+        #self.d2()
+        self.panel3.SetSizerAndFit(self.grid3)
+        self.panel3.SetSize(self.size3())
+        print('panel3', self.panel3.Size)
 
     def panel4_set(self):
         '''8y7test'''
-        # panel=wx.Panel()
-        self.panel4 = wx.Panel(self.__splitter1, -1, size=(1000, self.h-self.h_height))
-        self.grid4 = wx.BoxSizer(wx.VERTICAL)
-        collpane = wx.CollapsiblePane(self.panel4, label="Details:")
-        self.grid4.Add(collpane, 2, wx.GROW | wx.ALL, 5)
-        st = wx.StaticText(collpane.GetPane(), wx.ID_ANY, "test!")
-        grid = wx.BoxSizer(wx.VERTICAL)
-        grid.Add(st, 1, wx.GROW | wx.ALL, 2)
-        self.panel4.SetSizer(self.grid4)
-        self.grid4.SetSizeHints(self.panel4)
+        def draw():
+            dc = wx.WindowDC(self.panel4) 
+            brush = wx.Brush("white")  
+            dc.SetBackground(brush)  
+            #dc.Clear() 
+            print('dc')
+            pen = wx.Pen(wx.Colour(0,0,255)) 
+            dc.SetPen(pen) 
+            dc.DrawLine(100,50,350,50) 
+            dc.SetBrush(wx.Brush(wx.Colour(0,255,0), wx.CROSS_HATCH)) 
+            dc.DrawRectangle(100, 100, 500, 600) 
+      
 
-    def add_ctrls2(self, grid, panel, mystr='123456789'):
-        '''0'''
-        # 左侧窗口添加内容
-        # 添加按钮 读取数据
-        读取数据 = wx.Button(panel, label=mystr, style=wx.EXPAND)
-        grid.Add(读取数据, pos=(2, 1), flag=wx.ALIGN_CENTER)
+        self.panel4.SetScrollbars(1, 1, 400, 400)  # 窗口或区域尺寸变动数字无需修改
+        self.grid4 = wx.GridBagSizer(5, 5)
+        self.平差表 = 平差表(self.grid4, self.panel4, 0, 0)
+        #self.panel4.SetSizer(self.grid4)
+        self.panel4.SetSizerAndFit(self.grid4)
+        self.panel4.SetSize(self.size4())
 
-    def test(self, panel, mystr='test123456789'):
-        grid = wx.BoxSizer(wx.VERTICAL)
-        读取数据 = wx.Button(panel, label=mystr, style=wx.EXPAND)
-        grid.Add(读取数据, 1, wx.ALL | wx.EXPAND, 5)
-        读取数据2 = wx.Button(panel, label=mystr+'-2', style=wx.EXPAND)
-        grid.Add(读取数据2, 1, flag=wx.ALIGN_CENTER)
-
-        panel.SetSizerAndFit(grid)
+    def OnPaint(self, event): 
+      dc = wx.PaintDC(self) 
+      brush = wx.Brush("white")  
+      dc.SetBackground(brush)  
+      dc.Clear() 
+        
+      # dc.DrawBitmap(wx.Bitmap("python.jpg"),10,10,True) 
+      color = wx.Colour(255,0,0)
+      b = wx.Brush(color) 
+		
+      dc.SetBrush(b) 
+      dc.DrawCircle(300,125,50) 
+      dc.SetBrush(wx.Brush(wx.Colour(255,255,255))) 
+      dc.DrawCircle(300,125,30) 
+		
+      font = wx.Font(18, wx.ROMAN, wx.ITALIC, wx.NORMAL) 
+      dc.SetFont(font) 
+      dc.DrawText("Hello wxPython",200,10) 
+		
+      pen = wx.Pen(wx.Colour(0,0,255)) 
+      dc.SetPen(pen) 
+      dc.DrawLine(200,50,350,50) 
+      dc.SetBrush(wx.Brush(wx.Colour(0,255,0), wx.CROSS_HATCH)) 
+      dc.DrawRectangle(380, 15, 90, 60) 
+      
+    def d2(self):
+        #self.panel = wx.Panel(self)
+        # subplots默认返回一个Figure和一行一列的子图对象
+        self.fig=Figure()
+        self.axe = self.fig.add_subplot(111)
+        # 使用FigureCanvasWxAgg来创建Figure的背景画布
+        self.canvas = FigureCanvasWxAgg(self.panel3, -1, self.fig)
+        #print('000',doc(self.grid3.GetItem()))
+        self.grid3.Add(self.canvas,pos=(3,0))
+        # 绘制一条普通的折线图
+        self.x_data = [1, 2, 4,3,4,5,6,7,8,9]
+        self.y_data = [2, 5, 1,5,9,8,6,4,8,1]
+        self.axe.plot(self.x_data, self.y_data)
+        print('d2 end')
 
     def 菜单栏(self):
+        '''设置菜单栏'''
         menubar = wx.MenuBar()
         # 文件菜单#####################################################
         fileMenu = wx.Menu()
@@ -330,9 +384,70 @@ class MyWindows(wx.Frame):
         if id == wx.ID_NEW:
             self.text.AppendText("new"+"\n")
 
+    def change(self, event):
+        def p(ct, cstr=""):
+            try:
+                print(cstr, ct.Size)
+            except:
+                print(cstr, '不存在')
+        print('++'*9)
+        p(self.panel1, 'panel1')
+        p(self.panel2, 'panel2')
+        p(self.panel3, 'panel3')
+        p(self.panel12, 'panel12')
+        p(self.panel4, 'panel4')
+        p(self.panel123, 'panel123')
+        p(self.__splitter1, 's1')
+        p(self.__splitter2, 's2')
+        p(self.__splitter3, 's3')
+        print(self.Size)
+        # self.setsize()
+    def test(self):
+        def p(ct, cstr="",sstr=''):
+            try:
+                print(cstr, sstr,ct.Size)
+            except:
+                print(cstr, '不存在')
+        print('--'*9)
+        p(self.panel1, 'panel1',self.size1())
+        p(self.panel2, 'panel2',self.size2())
+        p(self.panel3, 'panel3',self.size3())
+        p(self.panel12, 'panel12',self.sp3size())
+        p(self.panel4, 'panel4',self.size4())
+        p(self.panel123, 'panel123',self.sp2size())
+        p(self.__splitter1, 's1',self.size0())
+        p(self.__splitter2, 's2',self.sp2size())
+        p(self.__splitter3, 's3',self.sp3size())
+        print(self.Size)
+    def setsize(self):
+        self.__splitter2.SetSize(sp2size())
+        self.__splitter3.SetSize(sp3size())
+        self.panel1.SetSize(size1())
+        self.panel2.SetSize(size2())
+        self.panel3.SetSize(size3())
+        self.panel4.SetSize(size4())
+        self.panel12.SetSize(sp3size())
+        self.panel123.SetSize(sp2size())
+        pass
+
+    def size0(self): return (self.Size[0]-16, self.Size[1]-39-20)
+    def size4(self): return (self.size0()[0], self.size4_h)
+    def size3(self): return (self.size3_w, self.size0()[1]-self.size4()[1])
+    def size2(self): return (self.size0()[0]-self.size3()[0], self.size2_h)
+    def size1(self): return (
+        self.size0()[0]-self.size3()[0], self.size3()[1]-self.size2()[1])
+    def sp2size(self): return (
+        self.size0()[0], self.size0()[1]-self.size4()[1])
+    def sp3size(self): return (
+        self.size0()[0]-self.size3()[0], self.size0()[1]-self.size4()[1])
+
 
 # 运行程序 #####################################################
 app = wx.App()
+print('step 1')
 window = MyWindows()
+print('step 2')
 window.Show(True)
+print('step 3')
 app.MainLoop()
+print('step 4')
