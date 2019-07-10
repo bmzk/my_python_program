@@ -3,12 +3,13 @@ mystr=''
 
 mypath="D:\\KwDownload"
 
+
 import os
 
 os.chdir(path)
 os.getcwd()
 
-os.path.dirname(path)
+#os.path.dirname(path)
 
 
 def get_all_files(mydir):
