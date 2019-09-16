@@ -1,0 +1,1 @@
+pyinstaller -F  C:\Users\asd\Documents\GitHub\my_python_program\自动关机\自动关机.py
