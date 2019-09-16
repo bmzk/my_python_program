@@ -45,7 +45,7 @@ def mainsub(x2,x3,y3,tp:point,v):
     #print(d(p1)**2-x**2-y**2,x,y)
     try:
         z=math.sqrt(d(p1)**2-x**2-y**2)
-    except expression as identifier:
+    except :
         z=0
         print('error ',tp.x,tp.y,x,y)
     rv=point(round(x,3),round(y,3),round(z,3),round(d(point(x,y,z)),3))
