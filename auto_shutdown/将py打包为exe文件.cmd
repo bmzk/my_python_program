@@ -1,0 +1,1 @@
+pyinstaller -F -w  "C:\Users\bmzk1\Documents\GitHub\my_python_program\auto_shutdown\auto_shutdown.py"
