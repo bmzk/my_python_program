@@ -1,0 +1,1 @@
+pyinstaller -F  C:\Users\asd\Documents\GitHub\my_python_program\灰度图处理\将一段文字以图像保存\将一段文字保存为图片.py
