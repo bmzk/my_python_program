@@ -9,5 +9,6 @@ print(b)
 b[1]={"e",8888}
 print(type(b))
 print(b)
-for i in range(9):
+for i in range(9) do
     print(i,a)
+end
