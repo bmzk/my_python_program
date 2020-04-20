@@ -1,3 +1,7 @@
+input("give in")
+import sys
+for i in sys.path:
+    print(i)
 import requests
 from bs4 import BeautifulSoup
 import datetime
@@ -5,8 +9,7 @@ import re
 from selenium import webdriver
 import time
 import xlwings as xw
-
-
+#C:\Users\asd\AppData\Roaming\Python\Python37\site-packages
 
 def get_sh_data(url):
     '''获得上海卫健委的数据'''
