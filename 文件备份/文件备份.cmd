@@ -28,6 +28,6 @@ xcopy %frompath%\*.* %topath%\%currentDate%\%currentTime%\%floder%\ /E/y
 ::echo.%DD%
 ::echo.%h%
 ::echo.%m%
-::echo.%s%
-::pause
+echo.%s%
+pause
 
