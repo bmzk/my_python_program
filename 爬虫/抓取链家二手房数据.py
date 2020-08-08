@@ -27,15 +27,7 @@ class house类(object):
         self.info =""
         self.taxfree = ''
         self.haskey = ""
-def getValue(类型,识别字符='div'):
-        '''设置属性'''
-        try :
-            print('attr111',house.find(识别字符, attrs={"class": 类型}))
-            attr = house.find(识别字符, attrs={"class": 类型}).get_text()
-            print('attr',attr)
-        except :
-            attr = 'None0'
-            print('attr00000000000')
+
 
 def get_data(city='tj', house_type='ershoufang'):
     ''' 输入城市,返回要访问的网页\n
@@ -80,25 +72,14 @@ def listinfo(listhtml):
         h.id=data1["data-housecode"]
         print('id',h.id)
 
-
         temp = house.find("div", attrs={"class": "price"})
         h.price =float( temp.find("span").get_text())
         print('总价',h.price,type(h.price))
-        print('=='*15)
-
-        #h.title = house.find("a", attrs={"class": "title"}).get_text()
-        h.title = getValue( "title","a")
-        print('h.title',h.title)
-        print('=='*15)
 
         temp = house.find("div", attrs={"class": "info"})
         h.info = temp.get_text().split('/')
         print('h.info',h.info)
-        
 
-        h.setValue(h.taxfree ,"taxfree","span")
-        h.setValue(h.haskey , "haskey","span")
-        print(h.haskey,'////',h.taxfree)
         print('=='*15)
 
 class 工作簿类():

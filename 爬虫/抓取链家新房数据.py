@@ -49,7 +49,7 @@ def w(mystr, filename='test.txt'):
     f.close()
 
 def 获取网页数量(cityurl):
-    return 100
+    return 200
 def listinfo(listhtml):
     '''处理获取的网页数据'''
     areasoup = BeautifulSoup(listhtml, 'html.parser')
