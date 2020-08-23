@@ -6,6 +6,10 @@ import requests
 import time
 import openpyxl
 # import pandas as pd
+def 获取网页数量(cityurl):
+    return 2
+
+
 headers = {
     'User-Agent': 'Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; WOW64; Trident/6.0; SLCC2;.NET CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; InfoPath.3; .NET4.0C; .NET4.0E)',
     'Accept': 'image/webp,image/*,*/*;q=0.8',
@@ -48,8 +52,7 @@ def w(mystr, filename='test.txt'):
     f.write(str(mystr))
     f.close()
 
-def 获取网页数量(cityurl):
-    return 200
+
 def listinfo(listhtml):
     '''处理获取的网页数据'''
     areasoup = BeautifulSoup(listhtml, 'html.parser')
@@ -85,7 +88,7 @@ class 工作簿类():
         try:
             self.工作簿.remove(工作簿.工作簿['Sheet'])
         except:
-            pass
+            print('移除工作表 Sheet 失败')
         self.工作簿.create_sheet('链家新房')
         self.工作簿.close()
 

@@ -13,38 +13,35 @@ headers = {
     'Referer': 'http://www.baidu.com/link?url=_andhfsjjjKRgEWkj7i9cFmYYGsisrnm2A-TN3XZDQXxvGsM9k9ZZSnikW2Yds4s&amp;amp;wd=&amp;amp;eqid=c3435a7d00006bd600000003582bfd1f',
     'Connection': 'keep-alive'}
 
-########################################
 hlist = []
-#house=''
-hlist.append(['ID', '标题', '信息', '小区名称', '区域', "单价", '总价', '标签'])
+hlist.append(
+    {'title': "楼盘名称", 'wuye': "物业类型", 'xiaoshouzhuangtai': "销售状态", 'location': "位置",
+     'jishi': "房型", 'area': "面积", 'tag': "标签", 'price': "单价",
+     'totalprice': "总价"})
 class house类(object):
     def __init__(self):
         self.代码段=''
         self.id=''
+        self.price =0
         self.title=''
         self.info =""
-        self.tag = ''
+        self.taxfree = ''
         self.haskey = ""
-        self.小区名称=''
-        self.区域 = ''
-        self.总价 = 0
-        self.单价 = 0
-    def to_list(self):
-        return [self.id,self.title,self.info,self.小区名称,self.区域,self.单价,self.总价,self.tag]
 
-def get_data():
+
+def get_data(city='tj', house_type='ershoufang'):
     ''' 输入城市,返回要访问的网页\n
     天津:tj     \n
     新房:loupan     二手房: ershoufang   \n
     返回网页数据'''
     htmlinfo = bytes()  # 查询到的数据
     # 查询第1页
-    url = 'https://tj.lianjia.com/ershoufang/binhaixinqu/'
-    r = requests.get(url=url+'l3a3a4a5p2p3/', headers=headers)
+    url = 'https://' + city + '.lianjia.com/'+house_type+'/'
+    r = requests.get(url=url, headers=headers)
     htmlinfo = r.content
     # 查询数据
-    for i in range(2, 获取网页数量(htmlinfo)+1):  # 获取2-100页的数据
-        a = (url + 'pg' + str(i) + 'l3a3a4a5p2p3/')
+    for i in range(2, 获取网页数量('')+1):  # 获取2-100页的数据
+        a = (url + 'pg' + str(i) + '/')
         r = requests.get(url=a, headers=headers)
         htmlinfo = htmlinfo + r.content
         print('已获取到:',i,'/',获取网页数量(''),' ', a)
@@ -56,62 +53,34 @@ def w(mystr, filename='test.txt'):
     # f.write('mystr')
     f.write(str(mystr))
     f.close()
-
-def 获取网页数量(data):
-    #temp = BeautifulSoup(data, 'html.parser')
-    #temp = temp.find(  'div', attrs={'class': 'page-box house-lst-page-box'})
-    #rv = temp['page-data']
-    #print(110,rv,type(rv),dict(rv))
-    return 100
+house=''
+def 获取网页数量(cityurl):
+    return 2
 def listinfo(listhtml):
     '''处理获取的网页数据'''
     areasoup = BeautifulSoup(listhtml, 'html.parser')
     # 转换为格式化数据
-    ljhouse = areasoup.find_all(  'div', attrs={'class': 'info clear'})
-
+    ljhouse = areasoup.find_all(
+        'div', attrs={'class': 'item'})
     for house in ljhouse:
         #print('house',house)
-        # 获取一个房屋的信息
-        #print('=='*15)
+      
+        print('=='*15)
         h=house类()
-        try:
-            h.代码段=house
-            data1 = house.find("a", attrs={"class": ""})
-            h.title = data1.get_text()
-            h.id=data1["data-housecode"]
-            #print('title',h.title,'id',h.id)
+        h.代码段=house
+        data1 = house.find("a", attrs={"class": "img"})
+        h.id=data1["data-housecode"]
+        print('id',h.id)
 
-            temp = house.find("div", attrs={"class": "positionInfo"})
-            temp = temp.find_all("a")
-            h.小区名称 = temp[0].get_text()
-            h.区域  = temp[1].get_text()
-            #print('h.小区名称',h.小区名称,'h.区域' ,h.区域)
+        temp = house.find("div", attrs={"class": "price"})
+        h.price =float( temp.find("span").get_text())
+        print('总价',h.price,type(h.price))
 
-            temp = house.find("div", attrs={"class": "houseInfo"})
-            h.info = temp.get_text() #.split('|')
-            #print('h.info',h.info)
+        temp = house.find("div", attrs={"class": "info"})
+        h.info = temp.get_text().split('/')
+        print('h.info',h.info)
 
-            temp = house.find("div", attrs={"class": "tag"})
-            h.tag = temp.get_text()#.split('/')
-            #print('h.info',h.tag)
-
-            temp = house.find("div", attrs={"class": "totalPrice"})
-            temp = temp.find('span')
-            h.总价 =temp.get_text()
-            #print('总价',float(h.总价))
-
-            temp = house.find("div", attrs={"class": "unitPrice"})
-            #temp = temp.find('span')
-            h.单价 =temp['data-price']
-            #print('单价',float(h.单价))
-        except:
-            print('本行出现错误')
-        #hlist.append(h.to_list())
-        工作簿.写入一行数据(h.to_list())
-        print('已完成 ',ljhouse.index(house),'/',len(ljhouse))
-        #显示进度(house , ljhouse)
-        #print('=='*15)
-
+        print('=='*15)
 
 class 工作簿类():
     def __init__(self):
@@ -119,17 +88,20 @@ class 工作簿类():
         try:
             self.工作簿.remove(工作簿.工作簿['Sheet'])
         except:
-            print('移除工作表失败')
-        self.工作簿.create_sheet('链家')
+            pass
+        self.工作簿.create_sheet('链家新房')
         self.工作簿.close()
 
     def 写入一行数据(self, 行数据: list):
-        self.工作簿['链家'].append(行数据)
+        self.工作簿['链家新房'].append(行数据)
     def 获取行数(self):
         return self.工作簿['链家新房'].max_row + 1
 
-
-
+def 显示进度(i,l,d=10):
+    id=l.index(i)
+    n=len(l)
+    if id % int(n /10) == 1 :
+            print('已完成','{:.2f}'.format(100* id/ n ),'%')
 
 if __name__ == '__main__':
     print('=='*15)
@@ -139,22 +111,19 @@ if __name__ == '__main__':
     city = 'tj'  # 目前固定为天津
     print('要查询的城市为:', '天津')
     # 获取网页原始数据
-    print('-'*40)
     print('开始查询数据')
     html_data = get_data()
     # 处理数据
-    工作簿 = 工作簿类()
-    工作簿.写入一行数据(hlist[0])
-    print('-'*40)
     print('开始处理数据')
     listinfo(html_data)
     # 输出数据
-    print('-'*40)
     print('处理数据完成,开始输出数据')
-    
-    '''for i in hlist:
-        #工作簿.写入一行数据(i)
-        print('已完成 ',hlist.index(i),'/',len(hlist))'''
+    工作簿 = 工作簿类()
+    for i in hlist:
+        temp = list(i.values())
+        工作簿.写入一行数据( temp)
+        percent = '{:.2f}'.format(100*工作簿.获取行数()/len(hlist))
+        显示进度(i,hlist)
     filename = '链家二手房' + \
         time.strftime("%Y_%m_%d-%H_%M_%S", time.localtime())+'.xlsx'
     工作簿.工作簿.save(filename)
