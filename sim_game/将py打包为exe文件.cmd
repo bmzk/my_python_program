@@ -1,1 +1,0 @@
-pyinstaller -F  C:\Users\asd\Documents\GitHub\my_python_program\生命元胞实验\生命元胞实验.py
