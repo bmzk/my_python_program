@@ -1,9 +1,9 @@
-
+import time
 from bs4 import BeautifulSoup
 # Beautiful Soup 也是一个HTML/XML的解析器，主要的功能也是如何解析和提取 HTML/XML 数据。
 # Beautiful Soup自动将输入文档转换为Unicode编码，输出文档转换为utf-8编码。
 import requests
-import time
+
 import openpyxl
 # import pandas as pd
 headers = {
@@ -18,13 +18,15 @@ hlist.append(
     {'title': "楼盘名称", 'wuye': "物业类型", 'xiaoshouzhuangtai': "销售状态", 'location': "位置",
      'jishi': "房型", 'area': "面积", 'tag': "标签", 'price': "单价",
      'totalprice': "总价"})
+
+
 class house类(object):
     def __init__(self):
-        self.代码段=''
-        self.id=''
-        self.price =0
-        self.title=''
-        self.info =""
+        self.代码段 = ''
+        self.id = ''
+        self.price = 0
+        self.title = ''
+        self.info = ""
         self.taxfree = ''
         self.haskey = ""
 
@@ -44,18 +46,25 @@ def get_data(city='tj', house_type='ershoufang'):
         a = (url + 'pg' + str(i) + '/')
         r = requests.get(url=a, headers=headers)
         htmlinfo = htmlinfo + r.content
-        print('已获取到:',i,'/',获取网页数量(''),' ', a)
+        print('已获取到:', i, '/', 获取网页数量(''), ' ', a)
     print('已完成 获取网页数据')
     return htmlinfo
+
 
 def w(mystr, filename='test.txt'):
     f = open(filename, 'w', encoding='utf-8')
     # f.write('mystr')
     f.write(str(mystr))
     f.close()
-house=''
+
+
+house = ''
+
+
 def 获取网页数量(cityurl):
     return 2
+
+
 def listinfo(listhtml):
     '''处理获取的网页数据'''
     areasoup = BeautifulSoup(listhtml, 'html.parser')
@@ -63,24 +72,25 @@ def listinfo(listhtml):
     ljhouse = areasoup.find_all(
         'div', attrs={'class': 'item'})
     for house in ljhouse:
-        #print('house',house)
-      
+        # print('house',house)
+
         print('=='*15)
-        h=house类()
-        h.代码段=house
+        h = house类()
+        h.代码段 = house
         data1 = house.find("a", attrs={"class": "img"})
-        h.id=data1["data-housecode"]
-        print('id',h.id)
+        h.id = data1["data-housecode"]
+        print('id', h.id)
 
         temp = house.find("div", attrs={"class": "price"})
-        h.price =float( temp.find("span").get_text())
-        print('总价',h.price,type(h.price))
+        h.price = float(temp.find("span").get_text())
+        print('总价', h.price, type(h.price))
 
         temp = house.find("div", attrs={"class": "info"})
         h.info = temp.get_text().split('/')
-        print('h.info',h.info)
+        print('h.info', h.info)
 
         print('=='*15)
+
 
 class 工作簿类():
     def __init__(self):
@@ -94,14 +104,17 @@ class 工作簿类():
 
     def 写入一行数据(self, 行数据: list):
         self.工作簿['链家新房'].append(行数据)
+
     def 获取行数(self):
         return self.工作簿['链家新房'].max_row + 1
 
-def 显示进度(i,l,d=10):
-    id=l.index(i)
-    n=len(l)
-    if id % int(n /10) == 1 :
-            print('已完成','{:.2f}'.format(100* id/ n ),'%')
+
+def 显示进度(i, l, d=10):
+    id = l.index(i)
+    n = len(l)
+    if id % int(n / 10) == 1:
+        print('已完成', '{:.2f}'.format(100 * id / n), '%')
+
 
 if __name__ == '__main__':
     print('=='*15)
@@ -121,9 +134,9 @@ if __name__ == '__main__':
     工作簿 = 工作簿类()
     for i in hlist:
         temp = list(i.values())
-        工作簿.写入一行数据( temp)
+        工作簿.写入一行数据(temp)
         percent = '{:.2f}'.format(100*工作簿.获取行数()/len(hlist))
-        显示进度(i,hlist)
+        显示进度(i, hlist)
     filename = '链家二手房' + \
         time.strftime("%Y_%m_%d-%H_%M_%S", time.localtime())+'.xlsx'
     工作簿.工作簿.save(filename)
