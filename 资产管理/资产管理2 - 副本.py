@@ -1,6 +1,4 @@
-from sqlite3 import Row
 import tkinter as tk
-from tkinter.tix import COLUMN, ROW
 import color as cl
 #####
 unit_list = [['活动室', '室部', '校对组', '一组', '编辑组', '一体化'],
@@ -22,59 +20,46 @@ cell_list = [
 
 ##############
 
-win = tk.Tk()
+
+
+# 最底层窗口
+win= tk.Tk()
 win.title("资产管理")
 win.geometry('800x500+300+200')  # 窗口创建位置是（300，200）
-######################################################################
+
+# 列表
+canvas = tk.Canvas(win, scrollregion=(0, 0, 1500, 600), bg=cl.Green)  #创建canvas
+canvas.place(x=0, y=0, height=400, relwidth=1)
+
+frame = tk.Frame(canvas, bg=cl.Blue)  #把frame放在canvas里
+frame.place(x=0, y=0, relwidth=1)
+
+vbar=tk.Scrollbar(canvas,orient=tk.VERTICAL,command=canvas.yview) #竖直滚动条
+vbar.pack(anchor='e',side=tk.RIGHT,expand=1,fill = tk.Y) #frame的长宽，和canvas差不多的
+
+hbar = tk.Scrollbar(canvas, orient=tk.HORIZONTAL, command=canvas.xview)  #水平滚动条
+hbar.pack(anchor='s', side=tk.BOTTOM, fill=tk.X,
+          expand=True)  #) #frame的长宽，和canvas差不多的
+
+#print(canvas.winfo_x(),canvas.info(),canvas.size())
+canvas.config(xscrollcommand=hbar.set)  # ,yscrollcommand=vbar.set) #设置
+canvas.create_window((10, 10), window=frame, anchor='nw',
+                     height=400)  #create_window
+############################################################################################
 # 详细信息
-
 area2 = tk.LabelFrame(win,
-                      text='位置',
-                      labelanchor="n",
-                      bg=cl.Gray,
-                      bd=5,
-                      height=150)
-area2.place(x=0, y=0)
-
-for i in unit_list:
-    for j in i:
-        ck=tk.Checkbutton(area2, text=j)
-        ck.grid(column=unit_list.index(i),row=i.index(j),sticky='w')
-        ck.select()
-
-
-
-# 将 selectmode 设置为多选模式，并为Listbox控件添加滚动条
-listbox1 =tk.Listbox(win,selectmode = tk.BROWSE,height =25)
-#listbox1.pack()
-listbox1.place(x=10,y=200,width=150,relheight=0.6)
-# 设置滚动条，使用 yview使其在垂直方向上滚动 Listbox 组件的内容，通过绑定 Scollbar 组件的 command 参数实现
-s =tk. Scrollbar(listbox1)
-listbox1.configure( yscrollcommand = s.set)
-# 设置垂直滚动条显示的位置，使得滚动条，靠右侧；通过 fill 沿着 Y 轴填充
-s.pack(side = tk.RIGHT,fill = tk.Y)
-s.config(command = listbox1.yview)
-for i,item in enumerate(range(1,50)):
-    listbox1.insert(i,item)
-
-
-
-area3 = tk.LabelFrame(win,
                       text='详细信息',
-                      labelanchor="n",
+                      labelanchor="w",
                       bg=cl.Gray,
                       bd=5,
-                      height=150)
-area3.place(x=200, y=0)
-
-for i in unit_list:
-    for j in i:
-        ck=tk.Checkbutton(area3, text=j)
-        ck.grid(column=unit_list.index(i),row=i.index(j),sticky='w')
-        ck.select()
-
-
-
+                      height=50)
+area2.place(x=0, y=400)
+t_id=tk.Label(area2,text='sadasdas')
+t_id.grid(row=0, column=0, padx=2, pady=10)
+t_id=tk.Entry(area2)
+t_id.grid(row=0, column=1, padx=2, pady=10)
+button = tk.Button(area2, text='self.user', width=6)
+button.grid(row=0, column=3, padx=2, pady=10)
 
 
 class class_button():
@@ -111,7 +96,7 @@ for i in unit_list:
     for j in i:
         x = i.index(j)
         y = unit_list.index(i)
-        g = class_group(j, _window=area3, _pos=[x, y])
+        g = class_group(j, _window=frame, _pos=[x, y])
         units.append(g)
         print(g.frame.grid_info())
 units[-1].frame.grid(row=2, column=0, columnspan=3)
