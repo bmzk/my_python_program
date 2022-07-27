@@ -150,7 +150,7 @@ class C_window():
         self.listbox2 = tk.Listbox(win)
         self.listbox2.grid( row=13, column=0,columnspan=5,ipadx=200)
 
-        #####################################################
+        ##################################################### AA-BB-CC-99-88-77
 
     def line(self, str1, str2):
         win = 0
