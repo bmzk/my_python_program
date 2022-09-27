@@ -1,13 +1,17 @@
+from tempfile import TemporaryFile
+
 import numpy as np
 import pytest
 
 import matplotlib as mpl
+from matplotlib import dviread
+from matplotlib.testing import _has_tex_package
 from matplotlib.testing.decorators import check_figures_equal, image_comparison
+from matplotlib.testing._markers import needs_usetex
 import matplotlib.pyplot as plt
 
 
-if not mpl.checkdep_usetex(True):
-    pytestmark = pytest.mark.skip('Missing TeX of Ghostscript or dvipng')
+pytestmark = needs_usetex
 
 
 @image_comparison(
@@ -16,8 +20,7 @@ if not mpl.checkdep_usetex(True):
     style="mpl20")
 def test_usetex():
     mpl.rcParams['text.usetex'] = True
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     kwargs = {"verticalalignment": "baseline", "size": 24,
               "bbox": dict(pad=0, edgecolor="k", facecolor="none")}
     ax.text(0.2, 0.7,
@@ -61,15 +64,17 @@ def test_mathdefault():
     fig.canvas.draw()
 
 
-def test_minus_no_descent():
+@pytest.mark.parametrize("fontsize", [8, 10, 12])
+def test_minus_no_descent(fontsize):
     # Test special-casing of minus descent in DviFont._height_depth_of, by
     # checking that overdrawing a 1 and a -1 results in an overall height
     # equivalent to drawing either of them separately.
     mpl.style.use("mpl20")
+    mpl.rcParams['font.size'] = fontsize
     heights = {}
     fig = plt.figure()
     for vals in [(1,), (-1,), (-1, 1)]:
-        fig.clf()
+        fig.clear()
         for x in vals:
             fig.text(.5, .5, f"${x}$", usetex=True)
         fig.canvas.draw()
@@ -79,8 +84,57 @@ def test_minus_no_descent():
     assert len({*heights.values()}) == 1
 
 
-def test_textcomp_full():
-    plt.rcParams["text.latex.preamble"] = r"\usepackage[full]{textcomp}"
+@pytest.mark.parametrize('pkg', ['xcolor', 'chemformula'])
+def test_usetex_packages(pkg):
+    if not _has_tex_package(pkg):
+        pytest.skip(f'{pkg} is not available')
+    mpl.rcParams['text.usetex'] = True
+
+    fig = plt.figure()
+    text = fig.text(0.5, 0.5, "Some text 0123456789")
+    fig.canvas.draw()
+
+    mpl.rcParams['text.latex.preamble'] = (
+        r'\PassOptionsToPackage{dvipsnames}{xcolor}\usepackage{%s}' % pkg)
+    fig = plt.figure()
+    text2 = fig.text(0.5, 0.5, "Some text 0123456789")
+    fig.canvas.draw()
+    np.testing.assert_array_equal(text2.get_window_extent(),
+                                  text.get_window_extent())
+
+
+@pytest.mark.parametrize(
+    "preamble",
+    [r"\usepackage[full]{textcomp}", r"\usepackage{underscore}"],
+)
+def test_latex_pkg_already_loaded(preamble):
+    plt.rcParams["text.latex.preamble"] = preamble
     fig = plt.figure()
     fig.text(.5, .5, "hello, world", usetex=True)
     fig.canvas.draw()
+
+
+def test_usetex_with_underscore():
+    plt.rcParams["text.usetex"] = True
+    df = {"a_b": range(5)[::-1], "c": range(5)}
+    fig, ax = plt.subplots()
+    ax.plot("c", "a_b", data=df)
+    ax.legend()
+    ax.text(0, 0, "foo_bar", usetex=True)
+    plt.draw()
+
+
+@pytest.mark.flaky(reruns=3)  # Tends to hit a TeX cache lock on AppVeyor.
+@pytest.mark.parametrize("fmt", ["pdf", "svg"])
+def test_missing_psfont(fmt, monkeypatch):
+    """An error is raised if a TeX font lacks a Type-1 equivalent"""
+    monkeypatch.setattr(
+        dviread.PsfontsMap, '__getitem__',
+        lambda self, k: dviread.PsFont(
+            texname=b'texfont', psname=b'Some Font',
+            effects=None, encoding=None, filename=None))
+    mpl.rcParams['text.usetex'] = True
+    fig, ax = plt.subplots()
+    ax.text(0.5, 0.5, 'hello')
+    with TemporaryFile() as tmpfile, pytest.raises(ValueError):
+        fig.savefig(tmpfile, format=fmt)

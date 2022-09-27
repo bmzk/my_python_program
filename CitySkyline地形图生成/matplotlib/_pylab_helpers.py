@@ -4,7 +4,6 @@ Manage figures for the pyplot interface.
 
 import atexit
 from collections import OrderedDict
-import gc
 
 
 class Gcf:
@@ -53,20 +52,19 @@ class Gcf:
         It is recommended to pass a manager instance, to avoid confusion when
         two managers share the same number.
         """
-        if all(hasattr(num, attr) for attr in ["num", "_cidgcf", "destroy"]):
+        if all(hasattr(num, attr) for attr in ["num", "destroy"]):
             manager = num
             if cls.figs.get(manager.num) is manager:
                 cls.figs.pop(manager.num)
-            else:
-                return
         else:
             try:
                 manager = cls.figs.pop(num)
             except KeyError:
                 return
-        manager.canvas.mpl_disconnect(manager._cidgcf)
+        if hasattr(manager, "_cidgcf"):
+            manager.canvas.mpl_disconnect(manager._cidgcf)
         manager.destroy()
-        gc.collect(1)
+        del manager, num
 
     @classmethod
     def destroy_fig(cls, fig):
@@ -79,14 +77,10 @@ class Gcf:
     @classmethod
     def destroy_all(cls):
         """Destroy all figures."""
-        # Reimport gc in case the module globals have already been removed
-        # during interpreter shutdown.
-        import gc
         for manager in list(cls.figs.values()):
             manager.canvas.mpl_disconnect(manager._cidgcf)
             manager.destroy()
         cls.figs.clear()
-        gc.collect(1)
 
     @classmethod
     def has_fignum(cls, num):

@@ -1,6 +1,7 @@
 import numpy as np
 
-from matplotlib import cbook, rcParams
+import matplotlib as mpl
+from matplotlib import _api
 from matplotlib.axes import Axes
 import matplotlib.axis as maxis
 from matplotlib.patches import Circle
@@ -32,12 +33,13 @@ class GeoAxes(Axes):
         self.xaxis = maxis.XAxis(self)
         self.yaxis = maxis.YAxis(self)
         # Do not register xaxis or yaxis with spines -- as done in
-        # Axes._init_axis() -- until GeoAxes.xaxis.cla() works.
+        # Axes._init_axis() -- until GeoAxes.xaxis.clear() works.
         # self.spines['geo'].register_axis(self.yaxis)
         self._update_transScale()
 
-    def cla(self):
-        Axes.cla(self)
+    def clear(self):
+        # docstring inherited
+        super().clear()
 
         self.set_longitude_grid(30)
         self.set_latitude_grid(15)
@@ -50,7 +52,7 @@ class GeoAxes(Axes):
         # Why do we need to turn on yaxis tick labels, but
         # xaxis tick labels are already on?
 
-        self.grid(rcParams['axes.grid'])
+        self.grid(mpl.rcParams['axes.grid'])
 
         Axes.set_xlim(self, -np.pi, np.pi)
         Axes.set_ylim(self, -np.pi / 2.0, np.pi / 2.0)
@@ -115,7 +117,7 @@ class GeoAxes(Axes):
             .translate(0.5, 0.5)
 
     def get_xaxis_transform(self, which='grid'):
-        cbook._check_in_list(['tick1', 'tick2', 'grid'], which=which)
+        _api.check_in_list(['tick1', 'tick2', 'grid'], which=which)
         return self._xaxis_transform
 
     def get_xaxis_text1_transform(self, pad):
@@ -125,7 +127,7 @@ class GeoAxes(Axes):
         return self._xaxis_text2_transform, 'top', 'center'
 
     def get_yaxis_transform(self, which='grid'):
-        cbook._check_in_list(['tick1', 'tick2', 'grid'], which=which)
+        _api.check_in_list(['tick1', 'tick2', 'grid'], which=which)
         return self._yaxis_transform
 
     def get_yaxis_text1_transform(self, pad):
@@ -147,6 +149,7 @@ class GeoAxes(Axes):
     set_xscale = set_yscale
 
     def set_xlim(self, *args, **kwargs):
+        """Not supported. Please consider using Cartopy."""
         raise TypeError("Changing axes limits of a geographic projection is "
                         "not supported.  Please consider using Cartopy.")
 
@@ -155,14 +158,8 @@ class GeoAxes(Axes):
     def format_coord(self, lon, lat):
         """Return a format string formatting the coordinate."""
         lon, lat = np.rad2deg([lon, lat])
-        if lat >= 0.0:
-            ns = 'N'
-        else:
-            ns = 'S'
-        if lon >= 0.0:
-            ew = 'E'
-        else:
-            ew = 'W'
+        ns = 'N' if lat >= 0.0 else 'S'
+        ew = 'E' if lon >= 0.0 else 'W'
         return ('%f\N{DEGREE SIGN}%s, %f\N{DEGREE SIGN}%s'
                 % (abs(lat), ns, abs(lon), ew))
 
@@ -202,7 +199,7 @@ class GeoAxes(Axes):
 
     def can_zoom(self):
         """
-        Return *True* if this axes supports the zoom box button functionality.
+        Return whether this axes supports the zoom box button functionality.
 
         This axes object does not support interactive zoom box.
         """
@@ -210,7 +207,7 @@ class GeoAxes(Axes):
 
     def can_pan(self):
         """
-        Return *True* if this axes supports the pan/zoom button functionality.
+        Return whether this axes supports the pan/zoom button functionality.
 
         This axes object does not support interactive pan/zoom.
         """
@@ -237,7 +234,7 @@ class _GeoTransform(Transform):
         Resolution is the number of steps to interpolate between each input
         line segment to approximate its path in curved space.
         """
-        Transform.__init__(self)
+        super().__init__()
         self._resolution = resolution
 
     def __str__(self):
@@ -264,10 +261,7 @@ class AitoffAxes(GeoAxes):
             cos_latitude = np.cos(latitude)
 
             alpha = np.arccos(cos_latitude * np.cos(half_long))
-            # Avoid divide-by-zero errors using same method as NumPy.
-            alpha[alpha == 0.0] = 1e-20
-            # We want unnormalized sinc.  numpy.sinc gives us normalized
-            sinc_alpha = np.sin(alpha) / alpha
+            sinc_alpha = np.sinc(alpha / np.pi)  # np.sinc is sin(pi*x)/(pi*x).
 
             x = (cos_latitude * np.sin(half_long)) / sinc_alpha
             y = np.sin(latitude) / sinc_alpha
@@ -282,7 +276,7 @@ class AitoffAxes(GeoAxes):
         def transform_non_affine(self, xy):
             # docstring inherited
             # MGDTODO: Math is hard ;(
-            return xy
+            return np.full_like(xy, np.nan)
 
         def inverted(self):
             # docstring inherited
@@ -290,9 +284,9 @@ class AitoffAxes(GeoAxes):
 
     def __init__(self, *args, **kwargs):
         self._longitude_cap = np.pi / 2.0
-        GeoAxes.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.set_aspect(0.5, adjustable='box', anchor='C')
-        self.cla()
+        self.clear()
 
     def _get_core_transform(self, resolution):
         return self.AitoffTransform(resolution)
@@ -335,9 +329,9 @@ class HammerAxes(GeoAxes):
 
     def __init__(self, *args, **kwargs):
         self._longitude_cap = np.pi / 2.0
-        GeoAxes.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.set_aspect(0.5, adjustable='box', anchor='C')
-        self.cla()
+        self.clear()
 
     def _get_core_transform(self, resolution):
         return self.HammerTransform(resolution)
@@ -405,9 +399,9 @@ class MollweideAxes(GeoAxes):
 
     def __init__(self, *args, **kwargs):
         self._longitude_cap = np.pi / 2.0
-        GeoAxes.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.set_aspect(0.5, adjustable='box', anchor='C')
-        self.cla()
+        self.clear()
 
     def _get_core_transform(self, resolution):
         return self.MollweideTransform(resolution)
@@ -490,12 +484,13 @@ class LambertAxes(GeoAxes):
         self._longitude_cap = np.pi / 2
         self._center_longitude = center_longitude
         self._center_latitude = center_latitude
-        GeoAxes.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.set_aspect('equal', adjustable='box', anchor='C')
-        self.cla()
+        self.clear()
 
-    def cla(self):
-        GeoAxes.cla(self)
+    def clear(self):
+        # docstring inherited
+        super().clear()
         self.yaxis.set_major_formatter(NullFormatter())
 
     def _get_core_transform(self, resolution):

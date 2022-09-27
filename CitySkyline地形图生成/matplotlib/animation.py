@@ -1,7 +1,8 @@
 # TODO:
 # * Documentation -- this will need a new section of the User's Guide.
 #      Both for Animations and just timers.
-#   - Also need to update http://www.scipy.org/Cookbook/Matplotlib/Animations
+#   - Also need to update
+#     https://scipy-cookbook.readthedocs.io/items/Matplotlib_Animations.html
 # * Blit
 #   * Currently broken with Qt4 for widgets that don't start on screen
 #   * Still a few edge cases that aren't working correctly
@@ -16,6 +17,7 @@
 #   * Can blit be enabled for movies?
 # * Need to consider event sources to allow clicking through multiple figures
 
+
 import abc
 import base64
 import contextlib
@@ -28,33 +30,30 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import uuid
+import warnings
 
 import numpy as np
+from PIL import Image
 
 import matplotlib as mpl
 from matplotlib._animation_data import (
     DISPLAY_TEMPLATE, INCLUDED_FRAMES, JS_INCLUDE, STYLE_INCLUDE)
-from matplotlib import cbook
+from matplotlib import _api, cbook
 
 
 _log = logging.getLogger(__name__)
 
 # Process creation flag for subprocess to prevent it raising a terminal
-# window. See for example:
-# https://stackoverflow.com/questions/24130623/using-python-subprocess-popen-cant-prevent-exe-stopped-working-prompt
-if sys.platform == 'win32':
-    subprocess_creation_flags = CREATE_NO_WINDOW = 0x08000000
-else:
-    # Apparently None won't work here
-    subprocess_creation_flags = 0
+# window. See for example https://stackoverflow.com/q/24130623/
+subprocess_creation_flags = (
+    subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
 
 # Other potential writing methods:
 # * http://pymedia.org/
 # * libming (produces swf) python wrappers: https://github.com/libming/libming
 # * Wrap x264 API:
 
-# (http://stackoverflow.com/questions/2940671/
-# how-to-encode-series-of-images-into-h264-using-x264-api-c-c )
+# (https://stackoverflow.com/q/2940671/)
 
 
 def adjusted_figsize(w, h, dpi, n):
@@ -99,10 +98,6 @@ class MovieWriterRegistry:
     def __init__(self):
         self._registered = dict()
 
-    @cbook.deprecated("3.2")
-    def set_dirty(self):
-        """Sets a flag to re-setup the writers."""
-
     def register(self, name):
         """
         Decorator for registering a class under a name.
@@ -117,19 +112,6 @@ class MovieWriterRegistry:
             self._registered[name] = writer_cls
             return writer_cls
         return wrapper
-
-    @cbook.deprecated("3.2")
-    def ensure_not_dirty(self):
-        """If dirty, reasks the writers if they are available"""
-
-    @cbook.deprecated("3.2")
-    def reset_available_writers(self):
-        """Reset the available state of all registered writers"""
-
-    @cbook.deprecated("3.2")
-    @property
-    def avail(self):
-        return {name: self._registered[name] for name in self.list()}
 
     def is_available(self, name):
         """
@@ -171,19 +153,17 @@ writers = MovieWriterRegistry()
 
 class AbstractMovieWriter(abc.ABC):
     """
-    Abstract base class for writing movies. Fundamentally, what a MovieWriter
-    does is provide is a way to grab frames by calling grab_frame().
+    Abstract base class for writing movies, providing a way to grab frames by
+    calling `~AbstractMovieWriter.grab_frame`.
 
-    setup() is called to start the process and finish() is called afterwards.
-
-    This class is set up to provide for writing movie frame data to a pipe.
-    saving() is provided as a context manager to facilitate this process as::
+    `setup` is called to start the process and `finish` is called afterwards.
+    `saving` is provided as a context manager to facilitate this process as ::
 
         with moviewriter.saving(fig, outfile='myfile.mp4', dpi=100):
             # Iterate over frames
             moviewriter.grab_frame(**savefig_kwargs)
 
-    The use of the context manager ensures that setup() and finish() are
+    The use of the context manager ensures that `setup` and `finish` are
     performed as necessary.
 
     An instance of a concrete subclass of this class can be given as the
@@ -276,8 +256,9 @@ class MovieWriter(AbstractMovieWriter):
     # stored.  Third-party writers cannot meaningfully set these as they cannot
     # extend rcParams with new keys.
 
-    exec_key = cbook._deprecate_privatize_attribute("3.3")
-    args_key = cbook._deprecate_privatize_attribute("3.3")
+    # Pipe-based writers only support RGBA, but file-based ones support more
+    # formats.
+    supported_formats = ["rgba"]
 
     def __init__(self, fps=5, codec=None, bitrate=None, extra_args=None,
                  metadata=None):
@@ -296,7 +277,7 @@ class MovieWriter(AbstractMovieWriter):
             Extra command-line arguments passed to the underlying movie
             encoder.  The default, None, means to use
             :rc:`animation.[name-of-encoder]_args` for the builtin writers.
-        metadata : Dict[str, str], default: {}
+        metadata : dict[str, str], default: {}
             A dictionary of keys and values for metadata to include in the
             output file. Some keys that may be of use include:
             title, artist, genre, subject, copyright, srcform, comment.
@@ -312,8 +293,7 @@ class MovieWriter(AbstractMovieWriter):
 
         super().__init__(fps=fps, metadata=metadata, codec=codec,
                          bitrate=bitrate)
-
-        self.frame_format = 'rgba'
+        self.frame_format = self.supported_formats[0]
         self.extra_args = extra_args
 
     def _adjust_frame_size(self):
@@ -351,30 +331,7 @@ class MovieWriter(AbstractMovieWriter):
 
     def finish(self):
         """Finish any processing for writing the movie."""
-        self.cleanup()
-
-    def grab_frame(self, **savefig_kwargs):
-        # docstring inherited
-        _log.debug('MovieWriter.grab_frame: Grabbing frame.')
-        # Readjust the figure size in case it has been changed by the user.
-        # All frames must have the same size to save the movie correctly.
-        self.fig.set_size_inches(self._w, self._h)
-        # Save the figure data to the sink, using the frame format and dpi.
-        self.fig.savefig(self._frame_sink(), format=self.frame_format,
-                         dpi=self.dpi, **savefig_kwargs)
-
-    def _frame_sink(self):
-        """Return the place to which frames should be written."""
-        return self._proc.stdin
-
-    def _args(self):
-        """Assemble list of encoder-specific command-line arguments."""
-        return NotImplementedError("args needs to be implemented by subclass.")
-
-    def cleanup(self):
-        """Clean-up and collect the process used to write the movie file."""
         out, err = self._proc.communicate()
-        self._frame_sink().close()
         # Use the encoding/errors that universal_newlines would use.
         out = TextIOWrapper(BytesIO(out)).read()
         err = TextIOWrapper(BytesIO(err)).read()
@@ -389,6 +346,20 @@ class MovieWriter(AbstractMovieWriter):
         if self._proc.returncode:
             raise subprocess.CalledProcessError(
                 self._proc.returncode, self._proc.args, out, err)
+
+    def grab_frame(self, **savefig_kwargs):
+        # docstring inherited
+        _log.debug('MovieWriter.grab_frame: Grabbing frame.')
+        # Readjust the figure size in case it has been changed by the user.
+        # All frames must have the same size to save the movie correctly.
+        self.fig.set_size_inches(self._w, self._h)
+        # Save the figure data to the sink, using the frame format and dpi.
+        self.fig.savefig(self._proc.stdin, format=self.frame_format,
+                         dpi=self.dpi, **savefig_kwargs)
+
+    def _args(self):
+        """Assemble list of encoder-specific command-line arguments."""
+        return NotImplementedError("args needs to be implemented by subclass.")
 
     @classmethod
     def bin_path(cls):
@@ -412,12 +383,10 @@ class FileMovieWriter(MovieWriter):
     This must be sub-classed to be useful.
     """
     def __init__(self, *args, **kwargs):
-        MovieWriter.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.frame_format = mpl.rcParams['animation.frame_format']
 
-    @cbook._delete_parameter("3.3", "clear_temp")
-    def setup(self, fig, outfile, dpi=None, frame_prefix=None,
-              clear_temp=True):
+    def setup(self, fig, outfile, dpi=None, frame_prefix=None):
         """
         Setup for writing the movie file.
 
@@ -427,18 +396,14 @@ class FileMovieWriter(MovieWriter):
             The figure to grab the rendered frames from.
         outfile : str
             The filename of the resulting movie file.
-        dpi : float, optional
+        dpi : float, default: ``fig.dpi``
             The dpi of the output file. This, with the figure size,
             controls the size in pixels of the resulting movie file.
-            Default is ``fig.dpi``.
         frame_prefix : str, optional
-            The filename prefix to use for temporary files.  If None (the
+            The filename prefix to use for temporary files.  If *None* (the
             default), files are written to a temporary directory which is
-            deleted by `cleanup` (regardless of the value of *clear_temp*).
-        clear_temp : bool, optional
-            If the temporary files should be deleted after stitching
-            the final result.  Setting this to ``False`` can be useful for
-            debugging.  Defaults to ``True``.
+            deleted by `cleanup`; if not *None*, no temporary files are
+            deleted.
         """
         self.fig = fig
         self.outfile = outfile
@@ -453,19 +418,13 @@ class FileMovieWriter(MovieWriter):
         else:
             self._tmpdir = None
             self.temp_prefix = frame_prefix
-        self._clear_temp = clear_temp
         self._frame_counter = 0  # used for generating sequential file names
         self._temp_paths = list()
         self.fname_format_str = '%s%%07d.%s'
 
-    @cbook.deprecated("3.3")
-    @property
-    def clear_temp(self):
-        return self._clear_temp
-
-    @clear_temp.setter
-    def clear_temp(self, value):
-        self._clear_temp = value
+    def __del__(self):
+        if self._tmpdir:
+            self._tmpdir.cleanup()
 
     @property
     def frame_format(self):
@@ -480,6 +439,10 @@ class FileMovieWriter(MovieWriter):
         if frame_format in self.supported_formats:
             self._frame_format = frame_format
         else:
+            _api.warn_external(
+                f"Ignoring file format {frame_format!r} which is not "
+                f"supported by {type(self).__name__}; using "
+                f"{self.supported_formats[0]} instead.")
             self._frame_format = self.supported_formats[0]
 
     def _base_temp_name(self):
@@ -487,48 +450,30 @@ class FileMovieWriter(MovieWriter):
         # for extension and the prefix.
         return self.fname_format_str % (self.temp_prefix, self.frame_format)
 
-    def _frame_sink(self):
-        # Creates a filename for saving using the basename and the current
-        # counter.
-        path = Path(self._base_temp_name() % self._frame_counter)
-
-        # Save the filename so we can delete it later if necessary
-        self._temp_paths.append(path)
-        _log.debug('FileMovieWriter.frame_sink: saving frame %d to path=%s',
-                   self._frame_counter, path)
-        self._frame_counter += 1  # Ensures each created name is 'unique'
-
-        # This file returned here will be closed once it's used by savefig()
-        # because it will no longer be referenced and will be gc-ed.
-        return open(path, 'wb')
-
     def grab_frame(self, **savefig_kwargs):
         # docstring inherited
-        # Overloaded to explicitly close temp file.
-        _log.debug('MovieWriter.grab_frame: Grabbing frame.')
-        # Tell the figure to save its data to the sink, using the
-        # frame format and dpi.
-        with self._frame_sink() as myframesink:
-            self.fig.savefig(myframesink, format=self.frame_format,
-                             dpi=self.dpi, **savefig_kwargs)
+        # Creates a filename for saving using basename and counter.
+        path = Path(self._base_temp_name() % self._frame_counter)
+        self._temp_paths.append(path)  # Record the filename for later use.
+        self._frame_counter += 1  # Ensures each created name is unique.
+        _log.debug('FileMovieWriter.grab_frame: Grabbing frame %d to path=%s',
+                   self._frame_counter, path)
+        with open(path, 'wb') as sink:  # Save figure to the sink.
+            self.fig.savefig(sink, format=self.frame_format, dpi=self.dpi,
+                             **savefig_kwargs)
 
     def finish(self):
         # Call run here now that all frame grabbing is done. All temp files
         # are available to be assembled.
-        self._run()
-        MovieWriter.finish(self)  # Will call clean-up
-
-    def cleanup(self):
-        MovieWriter.cleanup(self)
-        if self._tmpdir:
-            _log.debug('MovieWriter: clearing temporary path=%s', self._tmpdir)
-            self._tmpdir.cleanup()
-        else:
-            if self._clear_temp:
-                _log.debug('MovieWriter: clearing temporary paths=%s',
-                           self._temp_paths)
-                for path in self._temp_paths:
-                    path.unlink()
+        try:
+            self._run()
+            super().finish()
+        finally:
+            if self._tmpdir:
+                _log.debug(
+                    'MovieWriter: clearing temporary path=%s', self._tmpdir
+                )
+                self._tmpdir.cleanup()
 
 
 @writers.register('pillow')
@@ -542,11 +487,9 @@ class PillowWriter(AbstractMovieWriter):
         self._frames = []
 
     def grab_frame(self, **savefig_kwargs):
-        from PIL import Image
         buf = BytesIO()
         self.fig.savefig(
             buf, **{**savefig_kwargs, "format": "rgba", "dpi": self.dpi})
-        renderer = self.fig.canvas.get_renderer()
         self._frames.append(Image.frombuffer(
             "RGBA", self.frame_size, buf.getbuffer(), "raw", "RGBA", 0, 1))
 
@@ -562,8 +505,8 @@ class FFMpegBase:
     """
     Mixin class for FFMpeg output.
 
-    To be useful this must be multiply-inherited from with a
-    `MovieWriterBase` sub-class.
+    This is a base class for the concrete `FFMpegWriter` and `FFMpegFileWriter`
+    classes.
     """
 
     _exec_key = 'animation.ffmpeg_path'
@@ -596,17 +539,6 @@ class FFMpegBase:
             args.extend(['-metadata', '%s=%s' % (k, v)])
 
         return args + ['-y', self.outfile]
-
-    @classmethod
-    def isAvailable(cls):
-        return (
-            super().isAvailable()
-            # Ubuntu 12.04 ships a broken ffmpeg binary which we shouldn't use.
-            # NOTE: when removed, remove the same method in AVConvBase.
-            and b'LibAv' not in subprocess.run(
-                [cls.bin_path()], creationflags=subprocess_creation_flags,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE).stderr)
 
 
 # Combine FFMpeg options with pipe-based writing
@@ -642,54 +574,28 @@ class FFMpegFileWriter(FFMpegBase, FileMovieWriter):
     Frames are written to temporary files on disk and then stitched
     together at the end.
     """
-    supported_formats = ['png', 'jpeg', 'ppm', 'tiff', 'sgi', 'bmp',
-                         'pbm', 'raw', 'rgba']
+    supported_formats = ['png', 'jpeg', 'tiff', 'raw', 'rgba']
 
     def _args(self):
         # Returns the command line parameters for subprocess to use
         # ffmpeg to create a movie using a collection of temp images
-        return [self.bin_path(), '-r', str(self.fps),
-                '-i', self._base_temp_name(),
-                '-vframes', str(self._frame_counter)] + self.output_args
-
-
-# Base class of avconv information.  AVConv has identical arguments to FFMpeg.
-@cbook.deprecated('3.3')
-class AVConvBase(FFMpegBase):
-    """
-    Mixin class for avconv output.
-
-    To be useful this must be multiply-inherited from with a
-    `MovieWriterBase` sub-class.
-    """
-
-    _exec_key = 'animation.avconv_path'
-    _args_key = 'animation.avconv_args'
-
-    # NOTE : should be removed when the same method is removed in FFMpegBase.
-    isAvailable = classmethod(MovieWriter.isAvailable.__func__)
-
-
-# Combine AVConv options with pipe-based writing
-@writers.register('avconv')
-class AVConvWriter(AVConvBase, FFMpegWriter):
-    """
-    Pipe-based avconv writer.
-
-    Frames are streamed directly to avconv via a pipe and written in a single
-    pass.
-    """
-
-
-# Combine AVConv options with file-based writing
-@writers.register('avconv_file')
-class AVConvFileWriter(AVConvBase, FFMpegFileWriter):
-    """
-    File-based avconv writer.
-
-    Frames are written to temporary files on disk and then stitched
-    together at the end.
-    """
+        args = []
+        # For raw frames, we need to explicitly tell ffmpeg the metadata.
+        if self.frame_format in {'raw', 'rgba'}:
+            args += [
+                '-f', 'image2', '-vcodec', 'rawvideo',
+                '-video_size', '%dx%d' % self.frame_size,
+                '-pixel_format', 'rgba',
+                '-framerate', str(self.fps),
+            ]
+        args += ['-r', str(self.fps), '-i', self._base_temp_name(),
+                 '-vframes', str(self._frame_counter)]
+        # Logging is quieted because subprocess.PIPE has limited buffer size.
+        # If you have a lot of frames in your animation and set logging to
+        # DEBUG, you will have a buffer overrun.
+        if _log.getEffectiveLevel() > logging.DEBUG:
+            args += ['-loglevel', 'error']
+        return [self.bin_path(), *args, *self.output_args]
 
 
 # Base class for animated GIFs with ImageMagick
@@ -697,22 +603,41 @@ class ImageMagickBase:
     """
     Mixin class for ImageMagick output.
 
-    To be useful this must be multiply-inherited from with a
-    `MovieWriterBase` sub-class.
+    This is a base class for the concrete `ImageMagickWriter` and
+    `ImageMagickFileWriter` classes, which define an ``input_names`` attribute
+    (or property) specifying the input names passed to ImageMagick.
     """
 
     _exec_key = 'animation.convert_path'
     _args_key = 'animation.convert_args'
 
+    @_api.deprecated("3.6")
     @property
     def delay(self):
         return 100. / self.fps
 
+    @_api.deprecated("3.6")
     @property
     def output_args(self):
         extra_args = (self.extra_args if self.extra_args is not None
                       else mpl.rcParams[self._args_key])
         return [*extra_args, self.outfile]
+
+    def _args(self):
+        # ImageMagick does not recognize "raw".
+        fmt = "rgba" if self.frame_format == "raw" else self.frame_format
+        extra_args = (self.extra_args if self.extra_args is not None
+                      else mpl.rcParams[self._args_key])
+        return [
+            self.bin_path(),
+            "-size", "%ix%i" % self.frame_size,
+            "-depth", "8",
+            "-delay", str(100 / self.fps),
+            "-loop", "0",
+            f"{fmt}:{self.input_names}",
+            *extra_args,
+            self.outfile,
+        ]
 
     @classmethod
     def bin_path(cls):
@@ -739,14 +664,9 @@ class ImageMagickWriter(ImageMagickBase, MovieWriter):
 
     Frames are streamed directly to ImageMagick via a pipe and written
     in a single pass.
-
     """
-    def _args(self):
-        return ([self.bin_path(),
-                 '-size', '%ix%i' % self.frame_size, '-depth', '8',
-                 '-delay', str(self.delay), '-loop', '0',
-                 '%s:-' % self.frame_format]
-                + self.output_args)
+
+    input_names = "-"  # stdin
 
 
 # Combine ImageMagick options with temp file-based writing
@@ -757,16 +677,11 @@ class ImageMagickFileWriter(ImageMagickBase, FileMovieWriter):
 
     Frames are written to temporary files on disk and then stitched
     together at the end.
-
     """
 
-    supported_formats = ['png', 'jpeg', 'ppm', 'tiff', 'sgi', 'bmp',
-                         'pbm', 'raw', 'rgba']
-
-    def _args(self):
-        return ([self.bin_path(), '-delay', str(self.delay), '-loop', '0',
-                 '%s*.%s' % (self.temp_prefix, self.frame_format)]
-                + self.output_args)
+    supported_formats = ['png', 'jpeg', 'tiff', 'raw', 'rgba']
+    input_names = property(
+        lambda self: f'{self.temp_prefix}*.{self.frame_format}')
 
 
 # Taken directly from jakevdp's JSAnimation package at
@@ -780,6 +695,9 @@ def _included_frames(paths, frame_format):
 
 def _embedded_frames(frame_list, frame_format):
     """frame_list should be a list of base64-encoded png files"""
+    if frame_format == 'svg':
+        # Fix MIME type for svg
+        frame_format = 'svg+xml'
     template = '  frames[{0}] = "data:image/{1};base64,{2}"\n'
     return "\n" + "".join(
         template.format(i, frame_format, frame_data.replace('\n', '\\\n'))
@@ -791,11 +709,6 @@ class HTMLWriter(FileMovieWriter):
     """Writer for JavaScript-based HTML movies."""
 
     supported_formats = ['png', 'jpeg', 'tiff', 'svg']
-
-    @cbook.deprecated("3.3")
-    @property
-    def args_key(self):
-        return 'animation.html_args'
 
     @classmethod
     def isAvailable(cls):
@@ -810,8 +723,8 @@ class HTMLWriter(FileMovieWriter):
         extra_args = ()  # Don't lookup nonexistent rcParam[args_key].
         self.embed_frames = embed_frames
         self.default_mode = default_mode.lower()
-        cbook._check_in_list(['loop', 'once', 'reflect'],
-                             default_mode=self.default_mode)
+        _api.check_in_list(['loop', 'once', 'reflect'],
+                           default_mode=self.default_mode)
 
         # Save embed limit, which is given in MB
         if embed_limit is None:
@@ -823,10 +736,9 @@ class HTMLWriter(FileMovieWriter):
 
         super().__init__(fps, codec, bitrate, extra_args, metadata)
 
-    def setup(self, fig, outfile, dpi, frame_dir=None):
+    def setup(self, fig, outfile, dpi=None, frame_dir=None):
         outfile = Path(outfile)
-        cbook._check_in_list(['.html', '.htm'],
-                             outfile_extension=outfile.suffix)
+        _api.check_in_list(['.html', '.htm'], outfile_extension=outfile.suffix)
 
         self._saved_frames = []
         self._total_bytes = 0
@@ -893,19 +805,13 @@ class HTMLWriter(FileMovieWriter):
 
         # duplicate the temporary file clean up logic from
         # FileMovieWriter.cleanup.  We can not call the inherited
-        # versions of finished or cleanup because both assume that
+        # versions of finish or cleanup because both assume that
         # there is a subprocess that we either need to call to merge
         # many frames together or that there is a subprocess call that
         # we need to clean up.
         if self._tmpdir:
             _log.debug('MovieWriter: clearing temporary path=%s', self._tmpdir)
             self._tmpdir.cleanup()
-        else:
-            if self._clear_temp:
-                _log.debug('MovieWriter: clearing temporary paths=%s',
-                           self._temp_paths)
-                for path in self._temp_paths:
-                    path.unlink()
 
 
 class Animation:
@@ -914,6 +820,12 @@ class Animation:
 
     This class is not usable as is, and should be subclassed to provide needed
     behavior.
+
+    .. note::
+
+        You must store the created Animation in a variable that lives as long
+        as the animation should run. Otherwise, the Animation object will be
+        garbage-collected and the animation stops.
 
     Parameters
     ----------
@@ -936,6 +848,8 @@ class Animation:
     """
 
     def __init__(self, fig, event_source=None, blit=False):
+        self._draw_was_started = False
+
         self._fig = fig
         # Disables blitting for backends that don't support it.  This
         # allows users to request it if available, but still have a
@@ -959,6 +873,16 @@ class Animation:
                                                       self._stop)
         if self._blit:
             self._setup_blit()
+
+    def __del__(self):
+        if not getattr(self, '_draw_was_started', True):
+            warnings.warn(
+                'Animation was deleted without rendering anything. This is '
+                'most likely not intended. To prevent deletion, assign the '
+                'Animation to a variable, e.g. `anim`, that exists until you '
+                'output the Animation using `plt.show()` or '
+                '`anim.save()`.'
+            )
 
     def _start(self, *args):
         """
@@ -1024,7 +948,7 @@ class Animation:
             encoder.  The default, None, means to use
             :rc:`animation.[name-of-encoder]_args` for the builtin writers.
 
-        metadata : Dict[str, str], default {}
+        metadata : dict[str, str], default: {}
             Dictionary of keys and values for metadata to include in
             the output file. Some keys that may be of use include:
             title, artist, genre, subject, copyright, srcform, comment.
@@ -1195,7 +1119,7 @@ class Animation:
     def _init_draw(self):
         # Initial draw to clear the frame. Also used by the blitting code
         # when a clean base is required.
-        pass
+        self._draw_was_started = True
 
     def _pre_draw(self, framedata, blit):
         # Perform any cleaning or whatnot before the drawing of the frame.
@@ -1222,11 +1146,11 @@ class Animation:
         # Handles blitted drawing, which renders only the artists given instead
         # of the entire figure.
         updated_ax = {a.axes for a in artists}
-        # Enumerate artists to cache axes' backgrounds. We do not draw
+        # Enumerate artists to cache Axes backgrounds. We do not draw
         # artists yet to not cache foreground from plots with shared axes
         for ax in updated_ax:
             # If we haven't cached the background for the current view of this
-            # axes object, do so now. This might not always be reliable, but
+            # Axes object, do so now. This might not always be reliable, but
             # it's an attempt to automate the process.
             cur_view = ax._get_view()
             view, bg = self._blit_cache.get(ax, (object(), None))
@@ -1236,12 +1160,12 @@ class Animation:
         # Make a separate pass to draw foreground.
         for a in artists:
             a.axes.draw_artist(a)
-        # After rendering all the needed artists, blit each axes individually.
+        # After rendering all the needed artists, blit each Axes individually.
         for ax in updated_ax:
             ax.figure.canvas.blit(ax.bbox)
 
     def _blit_clear(self, artists):
-        # Get a list of the axes that need clearing from the artists that
+        # Get a list of the Axes that need clearing from the artists that
         # have been drawn. Grab the appropriate saved background from the
         # cache and restore.
         axes = {a.axes for a in artists}
@@ -1256,13 +1180,19 @@ class Animation:
                 self._blit_cache.pop(ax)
 
     def _setup_blit(self):
-        # Setting up the blit requires: a cache of the background for the
-        # axes
+        # Setting up the blit requires: a cache of the background for the Axes
         self._blit_cache = dict()
         self._drawn_artists = []
+        # _post_draw needs to be called first to initialize the renderer
+        self._post_draw(None, self._blit)
+        # Then we need to clear the Frame for the initial draw
+        # This is typically handled in _on_resize because QT and Tk
+        # emit a resize event on launch, but the macosx backend does not,
+        # thus we force it here for everyone for consistency
+        self._init_draw()
+        # Connect to future resize events
         self._resize_id = self._fig.canvas.mpl_connect('resize_event',
                                                        self._on_resize)
-        self._post_draw(None, self._blit)
 
     def _on_resize(self, event):
         # On resize, we need to disable the resize event handling so we don't
@@ -1365,7 +1295,20 @@ class Animation:
             return 'Video too large to embed.'
 
     def to_jshtml(self, fps=None, embed_frames=True, default_mode=None):
-        """Generate HTML representation of the animation"""
+        """
+        Generate HTML representation of the animation.
+
+        Parameters
+        ----------
+        fps : int, optional
+            Movie frame rate (per second). If not set, the frame rate from
+            the animation's frame interval.
+        embed_frames : bool, optional
+        default_mode : str, optional
+            What to do when the animation ends. Must be one of ``{'loop',
+            'once', 'reflect'}``. Defaults to ``'loop'`` if ``self.repeat``
+            is True, otherwise ``'once'``.
+        """
         if fps is None and hasattr(self, '_interval'):
             # Convert interval in ms to frames per second
             fps = 1000 / self._interval
@@ -1396,12 +1339,32 @@ class Animation:
         elif fmt == 'jshtml':
             return self.to_jshtml()
 
+    def pause(self):
+        """Pause the animation."""
+        self.event_source.stop()
+        if self._blit:
+            for artist in self._drawn_artists:
+                artist.set_animated(False)
+
+    def resume(self):
+        """Resume the animation."""
+        self.event_source.start()
+        if self._blit:
+            for artist in self._drawn_artists:
+                artist.set_animated(True)
+
 
 class TimedAnimation(Animation):
     """
     `Animation` subclass for time-based animation.
 
     A new frame is drawn every *interval* milliseconds.
+
+    .. note::
+
+        You must store the created Animation in a variable that lives as long
+        as the animation should run. Otherwise, the Animation object will be
+        garbage-collected and the animation stops.
 
     Parameters
     ----------
@@ -1428,8 +1391,7 @@ class TimedAnimation(Animation):
         # sharing timers between animation objects for syncing animations.
         if event_source is None:
             event_source = fig.canvas.new_timer(interval=self._interval)
-        Animation.__init__(self, fig, event_source=event_source,
-                           *args, **kwargs)
+        super().__init__(fig, event_source=event_source, *args, **kwargs)
 
     def _step(self, *args):
         """Handler for getting events."""
@@ -1439,30 +1401,27 @@ class TimedAnimation(Animation):
         # _repeat_delay is set, change the event_source's interval to our loop
         # delay and set the callback to one which will then set the interval
         # back.
-        still_going = Animation._step(self, *args)
-        if not still_going and self.repeat:
-            self._init_draw()
-            self.frame_seq = self.new_frame_seq()
-            self.event_source.remove_callback(self._step)
-            self.event_source.add_callback(self._loop_delay)
-            self.event_source.interval = self._repeat_delay
-            return True
-        else:
-            return still_going
+        still_going = super()._step(*args)
+        if not still_going:
+            if self.repeat:
+                # Restart the draw loop
+                self._init_draw()
+                self.frame_seq = self.new_frame_seq()
+                self.event_source.interval = self._repeat_delay
+                return True
+            else:
+                # We are done with the animation. Call pause to remove
+                # animated flags from artists that were using blitting
+                self.pause()
+                if self._blit:
+                    # Remove the resize callback if we were blitting
+                    self._fig.canvas.mpl_disconnect(self._resize_id)
+                self._fig.canvas.mpl_disconnect(self._close_id)
+                self.event_source = None
+                return False
 
-    def _stop(self, *args):
-        # If we stop in the middle of a loop delay (which is relatively likely
-        # given the potential pause here), remove the loop_delay callback as
-        # well.
-        self.event_source.remove_callback(self._loop_delay)
-        Animation._stop(self)
-
-    def _loop_delay(self, *args):
-        # Reset the interval and change callbacks after the delay.
-        self.event_source.remove_callback(self._loop_delay)
         self.event_source.interval = self._interval
-        self.event_source.add_callback(self._step)
-        Animation._step(self)
+        return True
 
 
 class ArtistAnimation(TimedAnimation):
@@ -1472,13 +1431,19 @@ class ArtistAnimation(TimedAnimation):
     Before creating an instance, all plotting should have taken place
     and the relevant artists saved.
 
+    .. note::
+
+        You must store the created Animation in a variable that lives as long
+        as the animation should run. Otherwise, the Animation object will be
+        garbage-collected and the animation stops.
+
     Parameters
     ----------
     fig : `~matplotlib.figure.Figure`
         The figure object used to get needed events, such as draw or resize.
     artists : list
-        Each list entry is a collection of artists that are made visible on
-        the corresponding frame.  Other artists are made invisible.
+        Each list entry is a collection of `.Artist` objects that are made
+        visible on the corresponding frame.  Other artists are made invisible.
     interval : int, default: 200
         Delay between frames in milliseconds.
     repeat_delay : int, default: 0
@@ -1497,9 +1462,10 @@ class ArtistAnimation(TimedAnimation):
         # Use the list of artists as the framedata, which will be iterated
         # over by the machinery.
         self._framedata = artists
-        TimedAnimation.__init__(self, fig, *args, **kwargs)
+        super().__init__(fig, *args, **kwargs)
 
     def _init_draw(self):
+        super()._init_draw()
         # Make all the artists involved in *any* frame invisible
         figs = set()
         for f in self.new_frame_seq():
@@ -1537,6 +1503,12 @@ class ArtistAnimation(TimedAnimation):
 class FuncAnimation(TimedAnimation):
     """
     Makes an animation by repeatedly calling a function *func*.
+
+    .. note::
+
+        You must store the created Animation in a variable that lives as long
+        as the animation should run. Otherwise, the Animation object will be
+        garbage-collected and the animation stops.
 
     Parameters
     ----------
@@ -1642,10 +1614,10 @@ class FuncAnimation(TimedAnimation):
             self._iter_gen = frames
         elif np.iterable(frames):
             if kwargs.get('repeat', True):
+                self._tee_from = frames
                 def iter_frames(frames=frames):
-                    while True:
-                        this, frames = itertools.tee(frames, 2)
-                        yield from this
+                    this, self._tee_from = itertools.tee(self._tee_from, 2)
+                    yield from this
                 self._iter_gen = iter_frames
             else:
                 self._iter_gen = lambda: iter(frames)
@@ -1660,7 +1632,7 @@ class FuncAnimation(TimedAnimation):
             self.save_count = 100
         else:
             # itertools.islice returns an error when passed a numpy int instead
-            # of a native python int (http://bugs.python.org/issue30537).
+            # of a native python int (https://bugs.python.org/issue30537).
             # As a workaround, convert save_count to a native python int.
             self.save_count = int(self.save_count)
 
@@ -1669,7 +1641,7 @@ class FuncAnimation(TimedAnimation):
         # Needs to be initialized so the draw functions work without checking
         self._save_seq = []
 
-        TimedAnimation.__init__(self, fig, **kwargs)
+        super().__init__(fig, **kwargs)
 
         # Need to reset the saved seq, since right now it will contain data
         # for a single frame from init, which is not what we want.
@@ -1702,7 +1674,7 @@ class FuncAnimation(TimedAnimation):
                     except StopIteration:
                         pass
                     else:
-                        cbook.warn_deprecated(
+                        _api.warn_deprecated(
                             "2.2", message="FuncAnimation.save has truncated "
                             "your animation to 100 frames.  In the future, no "
                             "such truncation will occur; please pass "
@@ -1711,13 +1683,27 @@ class FuncAnimation(TimedAnimation):
                 return gen()
 
     def _init_draw(self):
+        super()._init_draw()
         # Initialize the drawing either using the given init_func or by
         # calling the draw function with the first item of the frame sequence.
         # For blitting, the init_func should return a sequence of modified
         # artists.
         if self._init_func is None:
-            self._draw_frame(next(self.new_frame_seq()))
-
+            try:
+                frame_data = next(self.new_frame_seq())
+            except StopIteration:
+                # we can't start the iteration, it may have already been
+                # exhausted by a previous save or just be 0 length.
+                # warn and bail.
+                warnings.warn(
+                    "Can not start iterating the frames for the initial draw. "
+                    "This can be caused by passing in a 0 length sequence "
+                    "for *frames*.\n\n"
+                    "If you passed *frames* as a generator "
+                    "it may be exhausted due to a previous display or save."
+                )
+                return
+            self._draw_frame(frame_data)
         else:
             self._drawn_artists = self._init_func()
             if self._blit:
@@ -1740,10 +1726,22 @@ class FuncAnimation(TimedAnimation):
         # Call the func with framedata and args. If blitting is desired,
         # func needs to return a sequence of any artists that were modified.
         self._drawn_artists = self._func(framedata, *self._args)
+
         if self._blit:
-            if self._drawn_artists is None:
-                raise RuntimeError('The animation function must return a '
-                                   'sequence of Artist objects.')
+
+            err = RuntimeError('The animation function must return a sequence '
+                               'of Artist objects.')
+            try:
+                # check if a sequence
+                iter(self._drawn_artists)
+            except TypeError:
+                raise err from None
+
+            # check each item if it's artist
+            for i in self._drawn_artists:
+                if not isinstance(i, mpl.artist.Artist):
+                    raise err
+
             self._drawn_artists = sorted(self._drawn_artists,
                                          key=lambda x: x.get_zorder())
 

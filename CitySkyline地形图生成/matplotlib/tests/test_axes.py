@@ -1,14 +1,12 @@
 from collections import namedtuple
 import datetime
 from decimal import Decimal
+from functools import partial
+import inspect
 import io
 from itertools import product
 import platform
 from types import SimpleNamespace
-try:
-    from contextlib import nullcontext
-except ImportError:
-    from contextlib import ExitStack as nullcontext  # Py3.6.
 
 import dateutil.tz
 
@@ -19,25 +17,38 @@ import pytest
 
 import matplotlib
 import matplotlib as mpl
-from matplotlib.testing.decorators import (
-    image_comparison, check_figures_equal, remove_ticks_and_titles)
+from matplotlib import rc_context
+from matplotlib._api import MatplotlibDeprecationWarning
 import matplotlib.colors as mcolors
 import matplotlib.dates as mdates
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
 import matplotlib.font_manager as mfont_manager
 import matplotlib.markers as mmarkers
 import matplotlib.patches as mpatches
+import matplotlib.path as mpath
+from matplotlib.projections.geo import HammerAxes
+from matplotlib.projections.polar import PolarAxes
 import matplotlib.pyplot as plt
+import matplotlib.text as mtext
 import matplotlib.ticker as mticker
 import matplotlib.transforms as mtransforms
+import mpl_toolkits.axisartist as AA
 from numpy.testing import (
     assert_allclose, assert_array_equal, assert_array_almost_equal)
-from matplotlib import rc_context
-from matplotlib.cbook import MatplotlibDeprecationWarning
+from matplotlib.testing.decorators import (
+    image_comparison, check_figures_equal, remove_ticks_and_titles)
 
 # Note: Some test cases are run twice: once normally and once with labeled data
 #       These two must be defined in the same test function or need to have
 #       different baseline images to prevent race conditions when pytest runs
 #       the tests with multiple threads.
+
+
+@check_figures_equal(extensions=["png"])
+def test_invisible_axes(fig_test, fig_ref):
+    ax = fig_test.subplots()
+    ax.set_visible(False)
 
 
 def test_get_labels():
@@ -48,17 +59,30 @@ def test_get_labels():
     assert ax.get_ylabel() == 'y label'
 
 
+def test_repr():
+    fig, ax = plt.subplots()
+    ax.set_label('label')
+    ax.set_title('title')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    assert repr(ax) == (
+        "<AxesSubplot: "
+        "label='label', title={'center': 'title'}, xlabel='x', ylabel='y'>")
+
+
 @check_figures_equal()
 def test_label_loc_vertical(fig_test, fig_ref):
     ax = fig_test.subplots()
-    sc = ax.scatter([1, 2], [1, 2], c=[1, 2])
+    sc = ax.scatter([1, 2], [1, 2], c=[1, 2], label='scatter')
+    ax.legend()
     ax.set_ylabel('Y Label', loc='top')
     ax.set_xlabel('X Label', loc='right')
     cbar = fig_test.colorbar(sc)
     cbar.set_label("Z Label", loc='top')
 
     ax = fig_ref.subplots()
-    sc = ax.scatter([1, 2], [1, 2], c=[1, 2])
+    sc = ax.scatter([1, 2], [1, 2], c=[1, 2], label='scatter')
+    ax.legend()
     ax.set_ylabel('Y Label', y=1, ha='right')
     ax.set_xlabel('X Label', x=1, ha='right')
     cbar = fig_ref.colorbar(sc)
@@ -68,14 +92,16 @@ def test_label_loc_vertical(fig_test, fig_ref):
 @check_figures_equal()
 def test_label_loc_horizontal(fig_test, fig_ref):
     ax = fig_test.subplots()
-    sc = ax.scatter([1, 2], [1, 2], c=[1, 2])
+    sc = ax.scatter([1, 2], [1, 2], c=[1, 2], label='scatter')
+    ax.legend()
     ax.set_ylabel('Y Label', loc='bottom')
     ax.set_xlabel('X Label', loc='left')
     cbar = fig_test.colorbar(sc, orientation='horizontal')
     cbar.set_label("Z Label", loc='left')
 
     ax = fig_ref.subplots()
-    sc = ax.scatter([1, 2], [1, 2], c=[1, 2])
+    sc = ax.scatter([1, 2], [1, 2], c=[1, 2], label='scatter')
+    ax.legend()
     ax.set_ylabel('Y Label', y=0, ha='left')
     ax.set_xlabel('X Label', x=0, ha='left')
     cbar = fig_ref.colorbar(sc, orientation='horizontal')
@@ -87,18 +113,42 @@ def test_label_loc_rc(fig_test, fig_ref):
     with matplotlib.rc_context({"xaxis.labellocation": "right",
                                 "yaxis.labellocation": "top"}):
         ax = fig_test.subplots()
-        sc = ax.scatter([1, 2], [1, 2], c=[1, 2])
+        sc = ax.scatter([1, 2], [1, 2], c=[1, 2], label='scatter')
+        ax.legend()
         ax.set_ylabel('Y Label')
         ax.set_xlabel('X Label')
         cbar = fig_test.colorbar(sc, orientation='horizontal')
         cbar.set_label("Z Label")
 
     ax = fig_ref.subplots()
-    sc = ax.scatter([1, 2], [1, 2], c=[1, 2])
+    sc = ax.scatter([1, 2], [1, 2], c=[1, 2], label='scatter')
+    ax.legend()
     ax.set_ylabel('Y Label', y=1, ha='right')
     ax.set_xlabel('X Label', x=1, ha='right')
     cbar = fig_ref.colorbar(sc, orientation='horizontal')
     cbar.set_label("Z Label", x=1, ha='right')
+
+
+def test_label_shift():
+    fig, ax = plt.subplots()
+
+    # Test label re-centering on x-axis
+    ax.set_xlabel("Test label", loc="left")
+    ax.set_xlabel("Test label", loc="center")
+    assert ax.xaxis.get_label().get_horizontalalignment() == "center"
+    ax.set_xlabel("Test label", loc="right")
+    assert ax.xaxis.get_label().get_horizontalalignment() == "right"
+    ax.set_xlabel("Test label", loc="center")
+    assert ax.xaxis.get_label().get_horizontalalignment() == "center"
+
+    # Test label re-centering on y-axis
+    ax.set_ylabel("Test label", loc="top")
+    ax.set_ylabel("Test label", loc="center")
+    assert ax.yaxis.get_label().get_horizontalalignment() == "center"
+    ax.set_ylabel("Test label", loc="bottom")
+    assert ax.yaxis.get_label().get_horizontalalignment() == "left"
+    ax.set_ylabel("Test label", loc="center")
+    assert ax.yaxis.get_label().get_horizontalalignment() == "center"
 
 
 @check_figures_equal(extensions=["png"])
@@ -108,10 +158,10 @@ def test_acorr(fig_test, fig_ref):
     x = np.random.normal(0, 1, Nx).cumsum()
     maxlags = Nx-1
 
-    fig_test, ax_test = plt.subplots()
+    ax_test = fig_test.subplots()
     ax_test.acorr(x, maxlags=maxlags)
 
-    fig_ref, ax_ref = plt.subplots()
+    ax_ref = fig_ref.subplots()
     # Normalized autocorrelation
     norm_auto_corr = np.correlate(x, x, mode="full")/np.dot(x, x)
     lags = np.arange(-maxlags, maxlags+1)
@@ -413,8 +463,10 @@ def test_inverted_cla():
     assert not ax.xaxis_inverted()
     assert ax.yaxis_inverted()
 
-    # 5. two shared axes. Inverting the master axis should invert the shared
-    # axes; clearing the master axis should bring axes in shared
+    for ax in fig.axes:
+        ax.remove()
+    # 5. two shared axes. Inverting the leader axis should invert the shared
+    # axes; clearing the leader axis should bring axes in shared
     # axes back to normal.
     ax0 = plt.subplot(211)
     ax1 = plt.subplot(212, sharey=ax0)
@@ -424,7 +476,7 @@ def test_inverted_cla():
     ax0.cla()
     assert not ax1.yaxis_inverted()
     ax1.cla()
-    # 6. clearing the nonmaster should not touch limits
+    # 6. clearing the follower should not touch limits
     ax0.imshow(img)
     ax1.plot(x, np.cos(x))
     ax1.cla()
@@ -432,6 +484,63 @@ def test_inverted_cla():
 
     # clean up
     plt.close(fig)
+
+
+def test_subclass_clear_cla():
+    # Ensure that subclasses of Axes call cla/clear correctly.
+    # Note, we cannot use mocking here as we want to be sure that the
+    # superclass fallback does not recurse.
+
+    with pytest.warns(match='Overriding `Axes.cla`'):
+        class ClaAxes(Axes):
+            def cla(self):
+                nonlocal called
+                called = True
+
+    with pytest.warns(match='Overriding `Axes.cla`'):
+        class ClaSuperAxes(Axes):
+            def cla(self):
+                nonlocal called
+                called = True
+                super().cla()
+
+    class SubClaAxes(ClaAxes):
+        pass
+
+    class ClearAxes(Axes):
+        def clear(self):
+            nonlocal called
+            called = True
+
+    class ClearSuperAxes(Axes):
+        def clear(self):
+            nonlocal called
+            called = True
+            super().clear()
+
+    class SubClearAxes(ClearAxes):
+        pass
+
+    fig = Figure()
+    for axes_class in [ClaAxes, ClaSuperAxes, SubClaAxes,
+                       ClearAxes, ClearSuperAxes, SubClearAxes]:
+        called = False
+        ax = axes_class(fig, [0, 0, 1, 1])
+        # Axes.__init__ has already called clear (which aliases to cla or is in
+        # the subclass).
+        assert called
+
+        called = False
+        ax.cla()
+        assert called
+
+
+def test_cla_not_redefined_internally():
+    for klass in Axes.__subclasses__():
+        # Check that cla does not get redefined in our Axes subclasses, except
+        # for in the above test function.
+        if 'test_subclass_clear_cla' not in klass.__qualname__:
+            assert 'cla' not in klass.__dict__
 
 
 @check_figures_equal(extensions=["png"])
@@ -454,7 +563,7 @@ def test_autoscale_tiny_range():
         ax.plot([0, 1], [1, 1 + y1])
 
 
-@pytest.mark.style('default')
+@mpl.style.context('default')
 def test_autoscale_tight():
     fig, ax = plt.subplots(1, 1)
     ax.plot([1, 2, 3, 4])
@@ -463,8 +572,22 @@ def test_autoscale_tight():
     assert_allclose(ax.get_xlim(), (-0.15, 3.15))
     assert_allclose(ax.get_ylim(), (1.0, 4.0))
 
+    # Check that autoscale is on
+    assert ax.get_autoscalex_on()
+    assert ax.get_autoscaley_on()
+    assert ax.get_autoscale_on()
+    # Set enable to None
+    ax.autoscale(enable=None)
+    # Same limits
+    assert_allclose(ax.get_xlim(), (-0.15, 3.15))
+    assert_allclose(ax.get_ylim(), (1.0, 4.0))
+    # autoscale still on
+    assert ax.get_autoscalex_on()
+    assert ax.get_autoscaley_on()
+    assert ax.get_autoscale_on()
 
-@pytest.mark.style('default')
+
+@mpl.style.context('default')
 def test_autoscale_log_shared():
     # related to github #7587
     # array starts at zero to trigger _minpos handling
@@ -482,7 +605,7 @@ def test_autoscale_log_shared():
     assert_allclose(ax2.get_ylim(), (x[0], x[-1]))
 
 
-@pytest.mark.style('default')
+@mpl.style.context('default')
 def test_use_sticky_edges():
     fig, ax = plt.subplots()
     ax.imshow([[0, 1], [2, 3]], origin='lower')
@@ -503,8 +626,8 @@ def test_use_sticky_edges():
 
 @check_figures_equal(extensions=["png"])
 def test_sticky_shared_axes(fig_test, fig_ref):
-    # Check that sticky edges work whether they are set in an axes that is a
-    # "master" in a share, or an axes that is a "follower".
+    # Check that sticky edges work whether they are set in an Axes that is a
+    # "leader" in a share, or an Axes that is a "follower".
     Z = np.arange(15).reshape(3, 5)
 
     ax0 = fig_test.add_subplot(211)
@@ -525,19 +648,11 @@ def test_basic_annotate():
     # Offset Points
 
     fig = plt.figure()
-    ax = fig.add_subplot(111, autoscale_on=False, xlim=(-1, 5), ylim=(-3, 5))
+    ax = fig.add_subplot(autoscale_on=False, xlim=(-1, 5), ylim=(-3, 5))
     line, = ax.plot(t, s, lw=3, color='purple')
 
     ax.annotate('local max', xy=(3, 1), xycoords='data',
                 xytext=(3, 3), textcoords='offset points')
-
-
-def test_annotate_parameter_warn():
-    fig, ax = plt.subplots()
-    with pytest.warns(MatplotlibDeprecationWarning,
-                      match=r"The \'s\' parameter of annotate\(\) "
-                             "has been renamed \'text\'"):
-        ax.annotate(s='now named text', xy=(0, 1))
 
 
 @image_comparison(['arrow_simple.png'], remove_text=True)
@@ -589,6 +704,16 @@ def test_annotate_default_arrow():
     assert ann.arrow_patch is not None
 
 
+def test_annotate_signature():
+    """Check that the signature of Axes.annotate() matches Annotation."""
+    fig, ax = plt.subplots()
+    annotate_params = inspect.signature(ax.annotate).parameters
+    annotation_params = inspect.signature(mtext.Annotation).parameters
+    assert list(annotate_params.keys()) == list(annotation_params.keys())
+    for p1, p2 in zip(annotate_params.values(), annotation_params.values()):
+        assert p1 == p2
+
+
 @image_comparison(['fill_units.png'], savefig_kwarg={'dpi': 60})
 def test_fill_units():
     import matplotlib.testing.jpl_units as units
@@ -601,31 +726,51 @@ def test_fill_units():
     dt = np.arange('2009-04-27', '2009-04-29', dtype='datetime64[D]')
     dtn = mdates.date2num(dt)
 
-    fig = plt.figure()
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
 
-    # Top-Left
-    ax1 = fig.add_subplot(221)
     ax1.plot([t], [value], yunits='deg', color='red')
     ind = [0, 0, 1, 1]
     ax1.fill(dtn[ind], [0.0, 0.0, 90.0, 0.0], 'b')
-    # Top-Right
-    ax2 = fig.add_subplot(222)
+
     ax2.plot([t], [value], yunits='deg', color='red')
     ax2.fill([t, t, t + day, t + day],
              [0.0, 0.0, 90.0, 0.0], 'b')
-    # Bottom-Left
-    ax3 = fig.add_subplot(223)
+
     ax3.plot([t], [value], yunits='deg', color='red')
     ax3.fill(dtn[ind],
              [0 * units.deg, 0 * units.deg, 90 * units.deg, 0 * units.deg],
              'b')
-    # Bottom-Right
-    ax4 = fig.add_subplot(224)
+
     ax4.plot([t], [value], yunits='deg', color='red')
     ax4.fill([t, t, t + day, t + day],
              [0 * units.deg, 0 * units.deg, 90 * units.deg, 0 * units.deg],
              facecolor="blue")
     fig.autofmt_xdate()
+
+
+def test_plot_format_kwarg_redundant():
+    with pytest.warns(UserWarning, match="marker .* redundantly defined"):
+        plt.plot([0], [0], 'o', marker='x')
+    with pytest.warns(UserWarning, match="linestyle .* redundantly defined"):
+        plt.plot([0], [0], '-', linestyle='--')
+    with pytest.warns(UserWarning, match="color .* redundantly defined"):
+        plt.plot([0], [0], 'r', color='blue')
+    # smoke-test: should not warn
+    plt.errorbar([0], [0], fmt='none', color='blue')
+
+
+@check_figures_equal(extensions=["png"])
+def test_errorbar_dashes(fig_test, fig_ref):
+    x = [1, 2, 3, 4]
+    y = np.sin(x)
+
+    ax_ref = fig_ref.gca()
+    ax_test = fig_test.gca()
+
+    line, *_ = ax_ref.errorbar(x, y, xerr=np.abs(y), yerr=np.abs(y))
+    line.set_dashes([2, 2])
+
+    ax_test.errorbar(x, y, xerr=np.abs(y), yerr=np.abs(y), dashes=[2, 2])
 
 
 @image_comparison(['single_point', 'single_point'])
@@ -634,22 +779,16 @@ def test_single_point():
     matplotlib.rcParams['lines.marker'] = 'o'
     matplotlib.rcParams['axes.grid'] = True
 
-    plt.figure()
-    plt.subplot(211)
-    plt.plot([0], [0], 'o')
-
-    plt.subplot(212)
-    plt.plot([1], [1], 'o')
+    fig, (ax1, ax2) = plt.subplots(2)
+    ax1.plot([0], [0], 'o')
+    ax2.plot([1], [1], 'o')
 
     # Reuse testcase from above for a labeled data test
     data = {'a': [0], 'b': [1]}
 
-    plt.figure()
-    plt.subplot(211)
-    plt.plot('a', 'a', 'o', data=data)
-
-    plt.subplot(212)
-    plt.plot('b', 'b', 'o', data=data)
+    fig, (ax1, ax2) = plt.subplots(2)
+    ax1.plot('a', 'a', 'o', data=data)
+    ax2.plot('b', 'b', 'o', data=data)
 
 
 @image_comparison(['single_date.png'], style='mpl20')
@@ -720,7 +859,7 @@ def test_axvspan_epoch():
     dt = units.Duration("ET", units.day.convert("sec"))
 
     ax = plt.gca()
-    plt.axvspan(t0, tf, facecolor="blue", alpha=0.25)
+    ax.axvspan(t0, tf, facecolor="blue", alpha=0.25)
     ax.set_xlim(t0 - 5.0*dt, tf + 5.0*dt)
 
 
@@ -775,6 +914,10 @@ def test_hexbin_pickable():
 @image_comparison(['hexbin_log.png'], style='mpl20')
 def test_hexbin_log():
     # Issue #1636 (and also test log scaled colorbar)
+
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['pcolormesh.snap'] = False
+
     np.random.seed(19680801)
     n = 100000
     x = np.random.standard_normal(n)
@@ -782,8 +925,29 @@ def test_hexbin_log():
     y = np.power(2, y * 0.5)
 
     fig, ax = plt.subplots()
-    h = ax.hexbin(x, y, yscale='log', bins='log')
+    h = ax.hexbin(x, y, yscale='log', bins='log',
+                  marginals=True, reduce_C_function=np.sum)
     plt.colorbar(h)
+
+
+@image_comparison(["hexbin_linear.png"], style="mpl20", remove_text=True)
+def test_hexbin_linear():
+    # Issue #21165
+    np.random.seed(19680801)
+    n = 100000
+    x = np.random.standard_normal(n)
+    y = 2.0 + 3.0 * x + 4.0 * np.random.standard_normal(n)
+
+    fig, ax = plt.subplots()
+    ax.hexbin(x, y, gridsize=(10, 5), marginals=True,
+              reduce_C_function=np.sum)
+
+
+def test_hexbin_log_clim():
+    x, y = np.arange(200).reshape((2, 100))
+    fig, ax = plt.subplots()
+    h = ax.hexbin(x, y, bins='log', vmin=2, vmax=100)
+    assert h.get_clim() == (2, 100)
 
 
 def test_inverted_limits():
@@ -823,7 +987,7 @@ def test_nonfinite_limits():
     ax.plot(x, y)
 
 
-@pytest.mark.style('default')
+@mpl.style.context('default')
 @pytest.mark.parametrize('plot_fun',
                          ['scatter', 'plot', 'fill_between'])
 @check_figures_equal(extensions=["png"])
@@ -857,8 +1021,7 @@ def test_imshow():
 
     # Reuse testcase from above for a labeled data test
     data = {"r": r}
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.imshow("r", data=data)
 
 
@@ -889,16 +1052,13 @@ def test_imshow_clip():
     ax.imshow(r, clip_path=clip_path)
 
 
-@check_figures_equal(extensions=["png"])
-def test_imshow_norm_vminvmax(fig_test, fig_ref):
-    """Parameters vmin, vmax should be ignored if norm is given."""
+def test_imshow_norm_vminvmax():
+    """Parameters vmin, vmax should error if norm is given."""
     a = [[1, 2], [3, 4]]
-    ax = fig_ref.subplots()
-    ax.imshow(a, vmin=0, vmax=5)
-    ax = fig_test.subplots()
-    with pytest.warns(MatplotlibDeprecationWarning,
-                      match="Passing parameters norm and vmin/vmax "
-                            "simultaneously is deprecated."):
+    ax = plt.axes()
+    with pytest.raises(ValueError,
+                       match="Passing a Normalize instance simultaneously "
+                             "with vmin/vmax is not supported."):
         ax.imshow(a, norm=mcolors.Normalize(-10, 10), vmin=0, vmax=5)
 
 
@@ -992,6 +1152,23 @@ def test_fill_between_interpolate_decreasing():
     ax.set_ylim(800, 600)
 
 
+@image_comparison(['fill_between_interpolate_nan'], remove_text=True)
+def test_fill_between_interpolate_nan():
+    # Tests fix for issue #18986.
+    x = np.arange(10)
+    y1 = np.asarray([8, 18, np.nan, 18, 8, 18, 24, 18, 8, 18])
+    y2 = np.asarray([18, 11, 8, 11, 18, 26, 32, 30, np.nan, np.nan])
+
+    fig, ax = plt.subplots()
+
+    ax.plot(x, y1, c='k')
+    ax.plot(x, y2, c='b')
+    ax.fill_between(x, y1, y2, where=y2 >= y1, facecolor="green",
+                    interpolate=True, alpha=0.5)
+    ax.fill_between(x, y1, y2, where=y1 >= y2, facecolor="red",
+                    interpolate=True, alpha=0.5)
+
+
 # test_symlog and test_symlog2 used to have baseline images in all three
 # formats, but the png and svg baselines got invalidated by the removal of
 # minor tick overstriking.
@@ -1036,6 +1213,9 @@ def test_pcolorargs_5205():
 
 @image_comparison(['pcolormesh'], remove_text=True)
 def test_pcolormesh():
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['pcolormesh.snap'] = False
+
     n = 12
     x = np.linspace(-1.5, 1.5, n)
     y = np.linspace(-1.5, 1.5, n*2)
@@ -1055,9 +1235,33 @@ def test_pcolormesh():
     ax3.pcolormesh(Qx, Qz, Z, shading="gouraud")
 
 
+@image_comparison(['pcolormesh_small'], extensions=["eps"])
+def test_pcolormesh_small():
+    n = 3
+    x = np.linspace(-1.5, 1.5, n)
+    y = np.linspace(-1.5, 1.5, n*2)
+    X, Y = np.meshgrid(x, y)
+    Qx = np.cos(Y) - np.cos(X)
+    Qz = np.sin(Y) + np.sin(X)
+    Qx = (Qx + 1.1)
+    Z = np.hypot(X, Y) / 5
+    Z = (Z - Z.min()) / Z.ptp()
+    Zm = ma.masked_where(np.abs(Qz) < 0.5 * np.max(Qz), Z)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1.pcolormesh(Qx, Qz, Zm[:-1, :-1], lw=0.5, edgecolors='k')
+    ax2.pcolormesh(Qx, Qz, Zm[:-1, :-1], lw=2, edgecolors=['b', 'w'])
+    ax3.pcolormesh(Qx, Qz, Zm, shading="gouraud")
+    for ax in fig.axes:
+        ax.set_axis_off()
+
+
 @image_comparison(['pcolormesh_alpha'], extensions=["png", "pdf"],
                   remove_text=True)
 def test_pcolormesh_alpha():
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['pcolormesh.snap'] = False
+
     n = 12
     X, Y = np.meshgrid(
         np.linspace(-1.5, 1.5, n),
@@ -1067,7 +1271,7 @@ def test_pcolormesh_alpha():
     Qy = Y + np.sin(X)
     Z = np.hypot(X, Y) / 5
     Z = (Z - Z.min()) / Z.ptp()
-    vir = plt.get_cmap("viridis", 16)
+    vir = mpl.colormaps["viridis"].resampled(16)
     # make another colormap with varying alpha
     colors = vir(np.arange(16))
     colors[:, 3] = 0.5 + 0.5*np.sin(np.arange(16))
@@ -1087,9 +1291,11 @@ def test_pcolormesh_alpha():
     ax4.pcolormesh(Qx, Qy, Z, cmap=cmap, shading='gouraud', zorder=1)
 
 
-@image_comparison(['pcolormesh_datetime_axis.png'],
-                  remove_text=False, style='mpl20')
+@image_comparison(['pcolormesh_datetime_axis.png'], style='mpl20')
 def test_pcolormesh_datetime_axis():
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['pcolormesh.snap'] = False
+
     fig = plt.figure()
     fig.subplots_adjust(hspace=0.4, top=0.98, bottom=.15)
     base = datetime.datetime(2013, 1, 1)
@@ -1113,8 +1319,7 @@ def test_pcolormesh_datetime_axis():
             label.set_rotation(30)
 
 
-@image_comparison(['pcolor_datetime_axis.png'],
-                  remove_text=False, style='mpl20')
+@image_comparison(['pcolor_datetime_axis.png'], style='mpl20')
 def test_pcolor_datetime_axis():
     fig = plt.figure()
     fig.subplots_adjust(hspace=0.4, top=0.98, bottom=.15)
@@ -1204,38 +1409,33 @@ def test_pcolornearestunits(fig_test, fig_ref):
     ax.pcolormesh(x2, y2, Z, shading='nearest')
 
 
+def test_pcolorflaterror():
+    fig, ax = plt.subplots()
+    x = np.arange(0, 9)
+    y = np.arange(0, 3)
+    np.random.seed(19680801)
+    Z = np.random.randn(3, 9)
+    with pytest.raises(TypeError, match='Dimensions of C'):
+        ax.pcolormesh(x, y, Z, shading='flat')
+
+
+@pytest.mark.parametrize('snap', [False, True])
 @check_figures_equal(extensions=["png"])
-def test_pcolordropdata(fig_test, fig_ref):
+def test_pcolorauto(fig_test, fig_ref, snap):
     ax = fig_test.subplots()
     x = np.arange(0, 10)
     y = np.arange(0, 4)
     np.random.seed(19680801)
     Z = np.random.randn(3, 9)
-    # fake dropping the data
-    ax.pcolormesh(x[:-1], y[:-1], Z[:-1, :-1], shading='flat')
-
-    ax = fig_ref.subplots()
-    # test dropping the data...
-    x2 = x[:-1]
-    y2 = y[:-1]
-    with pytest.warns(MatplotlibDeprecationWarning):
-        ax.pcolormesh(x2, y2, Z, shading='flat')
-
-
-@check_figures_equal(extensions=["png"])
-def test_pcolorauto(fig_test, fig_ref):
-    ax = fig_test.subplots()
-    x = np.arange(0, 10)
-    y = np.arange(0, 4)
-    np.random.seed(19680801)
-    Z = np.random.randn(3, 9)
-    ax.pcolormesh(x, y, Z, shading='auto')
+    # this is the same as flat; note that auto is default
+    ax.pcolormesh(x, y, Z, snap=snap)
 
     ax = fig_ref.subplots()
     # specify the centers
     x2 = x[:-1] + np.diff(x) / 2
     y2 = y[:-1] + np.diff(y) / 2
-    ax.pcolormesh(x2, y2, Z, shading='auto')
+    # this is same as nearest:
+    ax.pcolormesh(x2, y2, Z, snap=snap)
 
 
 @image_comparison(['canonical'])
@@ -1315,14 +1515,21 @@ def test_arc_ellipse():
     ax.add_patch(e2)
 
 
+def test_marker_as_markerstyle():
+    fix, ax = plt.subplots()
+    m = mmarkers.MarkerStyle('o')
+    ax.plot([1, 2, 3], [3, 2, 1], marker=m)
+    ax.scatter([1, 2, 3], [4, 3, 2], marker=m)
+    ax.errorbar([1, 2, 3], [5, 4, 3], marker=m)
+
+
 @image_comparison(['markevery'], remove_text=True)
 def test_markevery():
     x = np.linspace(0, 10, 100)
     y = np.sin(x) * np.sqrt(x/10 + 0.5)
 
     # check marker only plot
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.plot(x, y, 'o', label='default')
     ax.plot(x, y, 'd', markevery=None, label='mark all')
     ax.plot(x, y, 's', markevery=10, label='mark every 10')
@@ -1330,14 +1537,17 @@ def test_markevery():
     ax.legend()
 
 
-@image_comparison(['markevery_line'], remove_text=True)
+@image_comparison(['markevery_line'], remove_text=True, tol=0.005)
 def test_markevery_line():
+    # TODO: a slight change in rendering between Inkscape versions may explain
+    # why one had to introduce a small non-zero tolerance for the SVG test
+    # to pass. One may try to remove this hack once Travis' Inkscape version
+    # is modern enough. FWIW, no failure with 0.92.3 on my computer (#11358).
     x = np.linspace(0, 10, 100)
     y = np.sin(x) * np.sqrt(x/10 + 0.5)
 
     # check line/marker combos
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.plot(x, y, '-o', label='default')
     ax.plot(x, y, '-d', markevery=None, label='mark all')
     ax.plot(x, y, '-s', markevery=10, label='mark every 10')
@@ -1345,7 +1555,7 @@ def test_markevery_line():
     ax.legend()
 
 
-@image_comparison(['markevery_linear_scales'], remove_text=True)
+@image_comparison(['markevery_linear_scales'], remove_text=True, tol=0.001)
 def test_markevery_linear_scales():
     cases = [None,
              8,
@@ -1448,11 +1658,36 @@ def test_markevery_polar():
         plt.plot(theta, r, 'o', ls='-', ms=4,  markevery=case)
 
 
+@image_comparison(['markevery_linear_scales_nans'], remove_text=True)
+def test_markevery_linear_scales_nans():
+    cases = [None,
+             8,
+             (30, 8),
+             [16, 24, 30], [0, -1],
+             slice(100, 200, 3),
+             0.1, 0.3, 1.5,
+             (0.0, 0.1), (0.45, 0.1)]
+
+    cols = 3
+    gs = matplotlib.gridspec.GridSpec(len(cases) // cols + 1, cols)
+
+    delta = 0.11
+    x = np.linspace(0, 10 - 2 * delta, 200) + delta
+    y = np.sin(x) + 1.0 + delta
+    y[:10] = y[-20:] = y[50:70] = np.nan
+
+    for i, case in enumerate(cases):
+        row = (i // cols)
+        col = i % cols
+        plt.subplot(gs[row, col])
+        plt.title('markevery=%s' % str(case))
+        plt.plot(x, y, 'o', ls='-', ms=4,  markevery=case)
+
+
 @image_comparison(['marker_edges'], remove_text=True)
 def test_marker_edges():
     x = np.linspace(0, 1, 10)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.plot(x, np.sin(x), 'y.', ms=30.0, mew=0, mec='r')
     ax.plot(x+0.1, np.sin(x), 'y.', ms=30.0, mew=1, mec='r')
     ax.plot(x+0.2, np.sin(x), 'y.', ms=30.0, mew=2, mec='b')
@@ -1466,8 +1701,7 @@ def test_bar_tick_label_single():
 
     # Reuse testcase from above for a labeled data test
     data = {"a": 0, "b": 1}
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax = plt.gca()
     ax.bar("a", "b", align='edge', tick_label='0', data=data)
 
@@ -1614,6 +1848,53 @@ def test_boxplot_dates_pandas(pd):
     plt.boxplot(data, positions=years)
 
 
+def test_boxplot_capwidths():
+    data = np.random.rand(5, 3)
+    fig, axs = plt.subplots(9)
+
+    axs[0].boxplot(data, capwidths=[0.3, 0.2, 0.1], widths=[0.1, 0.2, 0.3])
+    axs[1].boxplot(data, capwidths=[0.3, 0.2, 0.1], widths=0.2)
+    axs[2].boxplot(data, capwidths=[0.3, 0.2, 0.1])
+
+    axs[3].boxplot(data, capwidths=0.5, widths=[0.1, 0.2, 0.3])
+    axs[4].boxplot(data, capwidths=0.5, widths=0.2)
+    axs[5].boxplot(data, capwidths=0.5)
+
+    axs[6].boxplot(data, widths=[0.1, 0.2, 0.3])
+    axs[7].boxplot(data, widths=0.2)
+    axs[8].boxplot(data)
+
+
+def test_pcolor_regression(pd):
+    from pandas.plotting import (
+        register_matplotlib_converters,
+        deregister_matplotlib_converters,
+    )
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+
+    times = [datetime.datetime(2021, 1, 1)]
+    while len(times) < 7:
+        times.append(times[-1] + datetime.timedelta(seconds=120))
+
+    y_vals = np.arange(5)
+
+    time_axis, y_axis = np.meshgrid(times, y_vals)
+    shape = (len(y_vals) - 1, len(times) - 1)
+    z_data = np.arange(shape[0] * shape[1])
+
+    z_data.shape = shape
+    try:
+        register_matplotlib_converters()
+
+        im = ax.pcolormesh(time_axis, y_axis, z_data)
+        # make sure this does not raise!
+        fig.canvas.draw()
+    finally:
+        deregister_matplotlib_converters()
+
+
 def test_bar_pandas(pd):
     # Smoke test for pandas
     df = pd.DataFrame(
@@ -1641,21 +1922,68 @@ def test_bar_pandas_indexed(pd):
     ax.bar(df.x, 1., width=df.width)
 
 
+@mpl.style.context('default')
+@check_figures_equal()
+def test_bar_hatches(fig_test, fig_ref):
+    ax_test = fig_test.subplots()
+    ax_ref = fig_ref.subplots()
+
+    x = [1, 2]
+    y = [2, 3]
+    hatches = ['x', 'o']
+    for i in range(2):
+        ax_ref.bar(x[i], y[i], color='C0', hatch=hatches[i])
+
+    ax_test.bar(x, y, hatch=hatches)
+
+
+@pytest.mark.parametrize(
+    ("x", "width", "label", "expected_labels", "container_label"),
+    [
+        ("x", 1, "x", ["_nolegend_"], "x"),
+        (["a", "b", "c"], [10, 20, 15], ["A", "B", "C"],
+         ["A", "B", "C"], "_nolegend_"),
+        (["a", "b", "c"], [10, 20, 15], ["R", "Y", "_nolegend_"],
+         ["R", "Y", "_nolegend_"], "_nolegend_"),
+        (["a", "b", "c"], [10, 20, 15], "bars",
+         ["_nolegend_", "_nolegend_", "_nolegend_"], "bars"),
+    ]
+)
+def test_bar_labels(x, width, label, expected_labels, container_label):
+    _, ax = plt.subplots()
+    bar_container = ax.bar(x, width, label=label)
+    bar_labels = [bar.get_label() for bar in bar_container]
+    assert expected_labels == bar_labels
+    assert bar_container.get_label() == container_label
+
+
+def test_bar_labels_length():
+    _, ax = plt.subplots()
+    with pytest.raises(ValueError):
+        ax.bar(["x", "y"], [1, 2], label=["X", "Y", "Z"])
+    _, ax = plt.subplots()
+    with pytest.raises(ValueError):
+        ax.bar(["x", "y"], [1, 2], label=["X"])
+
+
 def test_pandas_minimal_plot(pd):
-    # smoke test that series and index objcets do not warn
-    x = pd.Series([1, 2], dtype="float64")
-    plt.plot(x, x)
-    plt.plot(x.index, x)
-    plt.plot(x)
-    plt.plot(x.index)
+    # smoke test that series and index objects do not warn
+    for x in [pd.Series([1, 2], dtype="float64"),
+              pd.Series([1, 2], dtype="Float64")]:
+        plt.plot(x, x)
+        plt.plot(x.index, x)
+        plt.plot(x)
+        plt.plot(x.index)
+    df = pd.DataFrame({'col': [1, 2, 3]})
+    plt.plot(df)
+    plt.plot(df, df)
 
 
 @image_comparison(['hist_log'], remove_text=True)
 def test_hist_log():
     data0 = np.linspace(0, 1, 200)**3
     data = np.concatenate([1 - data0, 1 + data0])
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist(data, fill=False, log=True)
 
 
@@ -1690,6 +2018,21 @@ def test_hist_bar_empty():
     # From #3886: creating hist from empty dataset raises ValueError
     ax = plt.gca()
     ax.hist([], histtype='bar')
+
+
+def test_hist_float16():
+    np.random.seed(19680801)
+    values = np.clip(
+        np.random.normal(0.5, 0.3, size=1000), 0, 1).astype(np.float16)
+    h = plt.hist(values, bins=3, alpha=0.5)
+    bc = h[2]
+    # Check that there are no overlapping rectangles
+    for r in range(1, len(bc)):
+        rleft = bc[r-1].get_corners()
+        rright = bc[r].get_corners()
+        # right hand position of left rectangle <=
+        # left hand position of right rectangle
+        assert rleft[1][0] <= rright[0][0]
 
 
 @image_comparison(['hist_step_empty.png'], remove_text=True)
@@ -1794,6 +2137,187 @@ def test_hist_zorder(histtype, zorder):
         assert patch.get_zorder() == zorder
 
 
+@check_figures_equal(extensions=['png'])
+def test_stairs(fig_test, fig_ref):
+    import matplotlib.lines as mlines
+    y = np.array([6, 14, 32, 37, 48, 32, 21,  4])  # hist
+    x = np.array([1., 2., 3., 4., 5., 6., 7., 8., 9.])  # bins
+
+    test_axes = fig_test.subplots(3, 2).flatten()
+    test_axes[0].stairs(y, x, baseline=None)
+    test_axes[1].stairs(y, x, baseline=None, orientation='horizontal')
+    test_axes[2].stairs(y, x)
+    test_axes[3].stairs(y, x, orientation='horizontal')
+    test_axes[4].stairs(y, x)
+    test_axes[4].semilogy()
+    test_axes[5].stairs(y, x, orientation='horizontal')
+    test_axes[5].semilogx()
+
+    # defaults of `PathPatch` to be used for all following Line2D
+    style = {'solid_joinstyle': 'miter', 'solid_capstyle': 'butt'}
+
+    ref_axes = fig_ref.subplots(3, 2).flatten()
+    ref_axes[0].plot(x, np.append(y, y[-1]), drawstyle='steps-post', **style)
+    ref_axes[1].plot(np.append(y[0], y), x, drawstyle='steps-post', **style)
+
+    ref_axes[2].plot(x, np.append(y, y[-1]), drawstyle='steps-post', **style)
+    ref_axes[2].add_line(mlines.Line2D([x[0], x[0]], [0, y[0]], **style))
+    ref_axes[2].add_line(mlines.Line2D([x[-1], x[-1]], [0, y[-1]], **style))
+    ref_axes[2].set_ylim(0, None)
+
+    ref_axes[3].plot(np.append(y[0], y), x, drawstyle='steps-post', **style)
+    ref_axes[3].add_line(mlines.Line2D([0, y[0]], [x[0], x[0]], **style))
+    ref_axes[3].add_line(mlines.Line2D([0, y[-1]], [x[-1], x[-1]], **style))
+    ref_axes[3].set_xlim(0, None)
+
+    ref_axes[4].plot(x, np.append(y, y[-1]), drawstyle='steps-post', **style)
+    ref_axes[4].add_line(mlines.Line2D([x[0], x[0]], [0, y[0]], **style))
+    ref_axes[4].add_line(mlines.Line2D([x[-1], x[-1]], [0, y[-1]], **style))
+    ref_axes[4].semilogy()
+
+    ref_axes[5].plot(np.append(y[0], y), x, drawstyle='steps-post', **style)
+    ref_axes[5].add_line(mlines.Line2D([0, y[0]], [x[0], x[0]], **style))
+    ref_axes[5].add_line(mlines.Line2D([0, y[-1]], [x[-1], x[-1]], **style))
+    ref_axes[5].semilogx()
+
+
+@check_figures_equal(extensions=['png'])
+def test_stairs_fill(fig_test, fig_ref):
+    h, bins = [1, 2, 3, 4, 2], [0, 1, 2, 3, 4, 5]
+    bs = -2
+    # Test
+    test_axes = fig_test.subplots(2, 2).flatten()
+    test_axes[0].stairs(h, bins, fill=True)
+    test_axes[1].stairs(h, bins, orientation='horizontal', fill=True)
+    test_axes[2].stairs(h, bins, baseline=bs, fill=True)
+    test_axes[3].stairs(h, bins, baseline=bs, orientation='horizontal',
+                        fill=True)
+
+    # # Ref
+    ref_axes = fig_ref.subplots(2, 2).flatten()
+    ref_axes[0].fill_between(bins, np.append(h, h[-1]), step='post', lw=0)
+    ref_axes[0].set_ylim(0, None)
+    ref_axes[1].fill_betweenx(bins, np.append(h, h[-1]), step='post', lw=0)
+    ref_axes[1].set_xlim(0, None)
+    ref_axes[2].fill_between(bins, np.append(h, h[-1]),
+                             np.ones(len(h)+1)*bs, step='post', lw=0)
+    ref_axes[2].set_ylim(bs, None)
+    ref_axes[3].fill_betweenx(bins, np.append(h, h[-1]),
+                              np.ones(len(h)+1)*bs, step='post', lw=0)
+    ref_axes[3].set_xlim(bs, None)
+
+
+@check_figures_equal(extensions=['png'])
+def test_stairs_update(fig_test, fig_ref):
+    # fixed ylim because stairs() does autoscale, but updating data does not
+    ylim = -3, 4
+    # Test
+    test_ax = fig_test.add_subplot()
+    h = test_ax.stairs([1, 2, 3])
+    test_ax.set_ylim(ylim)
+    h.set_data([3, 2, 1])
+    h.set_data(edges=np.arange(4)+2)
+    h.set_data([1, 2, 1], np.arange(4)/2)
+    h.set_data([1, 2, 3])
+    h.set_data(None, np.arange(4))
+    assert np.allclose(h.get_data()[0], np.arange(1, 4))
+    assert np.allclose(h.get_data()[1], np.arange(4))
+    h.set_data(baseline=-2)
+    assert h.get_data().baseline == -2
+
+    # Ref
+    ref_ax = fig_ref.add_subplot()
+    h = ref_ax.stairs([1, 2, 3], baseline=-2)
+    ref_ax.set_ylim(ylim)
+
+
+@check_figures_equal(extensions=['png'])
+def test_stairs_baseline_0(fig_test, fig_ref):
+    # Test
+    test_ax = fig_test.add_subplot()
+    test_ax.stairs([5, 6, 7], baseline=None)
+
+    # Ref
+    ref_ax = fig_ref.add_subplot()
+    style = {'solid_joinstyle': 'miter', 'solid_capstyle': 'butt'}
+    ref_ax.plot(range(4), [5, 6, 7, 7], drawstyle='steps-post', **style)
+    ref_ax.set_ylim(0, None)
+
+
+def test_stairs_empty():
+    ax = plt.figure().add_subplot()
+    ax.stairs([], [42])
+    assert ax.get_xlim() == (39, 45)
+    assert ax.get_ylim() == (-0.06, 0.06)
+
+
+def test_stairs_invalid_nan():
+    with pytest.raises(ValueError, match='Nan values in "edges"'):
+        plt.stairs([1, 2], [0, np.nan, 1])
+
+
+def test_stairs_invalid_mismatch():
+    with pytest.raises(ValueError, match='Size mismatch'):
+        plt.stairs([1, 2], [0, 1])
+
+
+def test_stairs_invalid_update():
+    h = plt.stairs([1, 2], [0, 1, 2])
+    with pytest.raises(ValueError, match='Nan values in "edges"'):
+        h.set_data(edges=[1, np.nan, 2])
+
+
+def test_stairs_invalid_update2():
+    h = plt.stairs([1, 2], [0, 1, 2])
+    with pytest.raises(ValueError, match='Size mismatch'):
+        h.set_data(edges=np.arange(5))
+
+
+@image_comparison(['test_stairs_options.png'], remove_text=True)
+def test_stairs_options():
+    x, y = np.array([1, 2, 3, 4, 5]), np.array([1, 2, 3, 4]).astype(float)
+    yn = y.copy()
+    yn[1] = np.nan
+
+    fig, ax = plt.subplots()
+    ax.stairs(y*3, x, color='green', fill=True, label="A")
+    ax.stairs(y, x*3-3, color='red', fill=True,
+              orientation='horizontal', label="B")
+    ax.stairs(yn, x, color='orange', ls='--', lw=2, label="C")
+    ax.stairs(yn/3, x*3-2, ls='--', lw=2, baseline=0.5,
+              orientation='horizontal', label="D")
+    ax.stairs(y[::-1]*3+13, x-1, color='red', ls='--', lw=2, baseline=None,
+              label="E")
+    ax.stairs(y[::-1]*3+14, x, baseline=26,
+              color='purple', ls='--', lw=2, label="F")
+    ax.stairs(yn[::-1]*3+15, x+1, baseline=np.linspace(27, 25, len(y)),
+              color='blue', ls='--', label="G", fill=True)
+    ax.stairs(y[:-1][::-1]*2+11, x[:-1]+0.5, color='black', ls='--', lw=2,
+              baseline=12, hatch='//', label="H")
+    ax.legend(loc=0)
+
+
+@image_comparison(['test_stairs_datetime.png'])
+def test_stairs_datetime():
+    f, ax = plt.subplots(constrained_layout=True)
+    ax.stairs(np.arange(36),
+              np.arange(np.datetime64('2001-12-27'),
+                        np.datetime64('2002-02-02')))
+    plt.xticks(rotation=30)
+
+
+@check_figures_equal(extensions=['png'])
+def test_stairs_edge_handling(fig_test, fig_ref):
+    # Test
+    test_ax = fig_test.add_subplot()
+    test_ax.stairs([1, 2, 3], color='red', fill=True)
+
+    # Ref
+    ref_ax = fig_ref.add_subplot()
+    st = ref_ax.stairs([1, 2, 3], fill=True)
+    st.set_color('red')
+
+
 def contour_dat():
     x = np.linspace(-3, 5, 150)
     y = np.linspace(-3, 5, 120)
@@ -1804,10 +2328,9 @@ def contour_dat():
 @image_comparison(['contour_hatching'], remove_text=True, style='mpl20')
 def test_contour_hatching():
     x, y, z = contour_dat()
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.contourf(x, y, z, 7, hatches=['/', '\\', '//', '-'],
-                cmap=plt.get_cmap('gray'),
+                cmap=mpl.colormaps['gray'],
                 extend='both', alpha=0.5)
 
 
@@ -1815,10 +2338,9 @@ def test_contour_hatching():
 def test_contour_colorbar():
     x, y, z = contour_dat()
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     cs = ax.contourf(x, y, z, levels=np.arange(-1.8, 1.801, 0.2),
-                     cmap=plt.get_cmap('RdBu'),
+                     cmap=mpl.colormaps['RdBu'],
                      vmin=-0.6,
                      vmax=0.6,
                      extend='both')
@@ -1836,30 +2358,33 @@ def test_contour_colorbar():
 
 @image_comparison(['hist2d', 'hist2d'], remove_text=True, style='mpl20')
 def test_hist2d():
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['pcolormesh.snap'] = False
+
     np.random.seed(0)
     # make it not symmetric in case we switch x and y axis
     x = np.random.randn(100)*2+5
     y = np.random.randn(100)-2
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist2d(x, y, bins=10, rasterized=True)
 
     # Reuse testcase from above for a labeled data test
     data = {"x": x, "y": y}
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist2d("x", "y", bins=10, data=data, rasterized=True)
 
 
 @image_comparison(['hist2d_transpose'], remove_text=True, style='mpl20')
 def test_hist2d_transpose():
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['pcolormesh.snap'] = False
+
     np.random.seed(0)
     # make sure the output from np.histogram is transposed before
     # passing to pcolorfast
     x = np.array([5]*100)
     y = np.random.randn(100)-2
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist2d(x, y, bins=10, rasterized=True)
 
 
@@ -1938,17 +2463,68 @@ class TestScatter:
         with pytest.raises(ValueError):
             plt.scatter([1, 2, 3], [1, 2, 3], color=[1, 2, 3])
 
+    @pytest.mark.parametrize('kwargs',
+                                [
+                                    {'cmap': 'gray'},
+                                    {'norm': mcolors.Normalize()},
+                                    {'vmin': 0},
+                                    {'vmax': 0}
+                                ])
+    def test_scatter_color_warning(self, kwargs):
+        warn_match = "No data for colormapping provided "
+        # Warn for cases where 'cmap', 'norm', 'vmin', 'vmax'
+        # kwargs are being overridden
+        with pytest.warns(Warning, match=warn_match):
+            plt.scatter([], [], **kwargs)
+        with pytest.warns(Warning, match=warn_match):
+            plt.scatter([1, 2], [3, 4], c=[], **kwargs)
+        # Do not warn for cases where 'c' matches 'x' and 'y'
+        plt.scatter([], [], c=[], **kwargs)
+        plt.scatter([1, 2], [3, 4], c=[4, 5], **kwargs)
+
+    def test_scatter_unfilled(self):
+        coll = plt.scatter([0, 1, 2], [1, 3, 2], c=['0.1', '0.3', '0.5'],
+                           marker=mmarkers.MarkerStyle('o', fillstyle='none'),
+                           linewidths=[1.1, 1.2, 1.3])
+        assert coll.get_facecolors().shape == (0, 4)  # no facecolors
+        assert_array_equal(coll.get_edgecolors(), [[0.1, 0.1, 0.1, 1],
+                                                   [0.3, 0.3, 0.3, 1],
+                                                   [0.5, 0.5, 0.5, 1]])
+        assert_array_equal(coll.get_linewidths(), [1.1, 1.2, 1.3])
+
+    @mpl.style.context('default')
+    def test_scatter_unfillable(self):
+        coll = plt.scatter([0, 1, 2], [1, 3, 2], c=['0.1', '0.3', '0.5'],
+                           marker='x',
+                           linewidths=[1.1, 1.2, 1.3])
+        assert_array_equal(coll.get_facecolors(), coll.get_edgecolors())
+        assert_array_equal(coll.get_edgecolors(), [[0.1, 0.1, 0.1, 1],
+                                                   [0.3, 0.3, 0.3, 1],
+                                                   [0.5, 0.5, 0.5, 1]])
+        assert_array_equal(coll.get_linewidths(), [1.1, 1.2, 1.3])
+
     def test_scatter_size_arg_size(self):
         x = np.arange(4)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='same size as x and y'):
             plt.scatter(x, x, x[1:])
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='same size as x and y'):
             plt.scatter(x[1:], x[1:], x)
+        with pytest.raises(ValueError, match='float array-like'):
+            plt.scatter(x, x, 'foo')
+
+    def test_scatter_edgecolor_RGB(self):
+        # GitHub issue 19066
+        coll = plt.scatter([1, 2, 3], [1, np.nan, np.nan],
+                            edgecolor=(1, 0, 0))
+        assert mcolors.same_color(coll.get_edgecolor(), (1, 0, 0))
+        coll = plt.scatter([1, 2, 3, 4], [1, np.nan, np.nan, 1],
+                            edgecolor=(1, 0, 0, 1))
+        assert mcolors.same_color(coll.get_edgecolor(), (1, 0, 0, 1))
 
     @check_figures_equal(extensions=["png"])
     def test_scatter_invalid_color(self, fig_test, fig_ref):
         ax = fig_test.subplots()
-        cmap = plt.get_cmap("viridis", 16)
+        cmap = mpl.colormaps["viridis"].resampled(16)
         cmap.set_bad("k", 1)
         # Set a nonuniform size to prevent the last call to `scatter` (plotting
         # the invalid points separately in fig_ref) from using the marker
@@ -1957,15 +2533,15 @@ class TestScatter:
                    c=[1, np.nan, 2, np.nan], s=[1, 2, 3, 4],
                    cmap=cmap, plotnonfinite=True)
         ax = fig_ref.subplots()
-        cmap = plt.get_cmap("viridis", 16)
+        cmap = mpl.colormaps["viridis"].resampled(16)
         ax.scatter([0, 2], [0, 2], c=[1, 2], s=[1, 3], cmap=cmap)
         ax.scatter([1, 3], [1, 3], s=[2, 4], color="k")
 
     @check_figures_equal(extensions=["png"])
     def test_scatter_no_invalid_color(self, fig_test, fig_ref):
-        # With plotninfinite=False we plot only 2 points.
+        # With plotnonfinite=False we plot only 2 points.
         ax = fig_test.subplots()
-        cmap = plt.get_cmap("viridis", 16)
+        cmap = mpl.colormaps["viridis"].resampled(16)
         cmap.set_bad("k", 1)
         ax.scatter(range(4), range(4),
                    c=[1, np.nan, 2, np.nan], s=[1, 2, 3, 4],
@@ -1973,16 +2549,13 @@ class TestScatter:
         ax = fig_ref.subplots()
         ax.scatter([0, 2], [0, 2], c=[1, 2], s=[1, 3], cmap=cmap)
 
-    @check_figures_equal(extensions=["png"])
-    def test_scatter_norm_vminvmax(self, fig_test, fig_ref):
-        """Parameters vmin, vmax should be ignored if norm is given."""
+    def test_scatter_norm_vminvmax(self):
+        """Parameters vmin, vmax should error if norm is given."""
         x = [1, 2, 3]
-        ax = fig_ref.subplots()
-        ax.scatter(x, x, c=x, vmin=0, vmax=5)
-        ax = fig_test.subplots()
-        with pytest.warns(MatplotlibDeprecationWarning,
-                          match="Passing parameters norm and vmin/vmax "
-                                "simultaneously is deprecated."):
+        ax = plt.axes()
+        with pytest.raises(ValueError,
+                           match="Passing a Normalize instance simultaneously "
+                                 "with vmin/vmax is not supported."):
             ax.scatter(x, x, c=x, norm=mcolors.Normalize(-10, 10),
                        vmin=0, vmax=5)
 
@@ -2069,7 +2642,7 @@ class TestScatter:
                     c=c_case, edgecolors="black", kwargs={}, xsize=xsize,
                     get_next_color_func=get_next_color)
 
-    @pytest.mark.style('default')
+    @mpl.style.context('default')
     @check_figures_equal(extensions=["png"])
     def test_scatter_single_color_c(self, fig_test, fig_ref):
         rgb = [[1, 0.5, 0.05]]
@@ -2171,8 +2744,6 @@ def test_parse_scatter_color_args_error():
 
 def test_as_mpl_axes_api():
     # tests the _as_mpl_axes api
-    from matplotlib.projections.polar import PolarAxes
-
     class Polar:
         def __init__(self):
             self.theta_offset = 0
@@ -2184,34 +2755,10 @@ def test_as_mpl_axes_api():
     prj = Polar()
     prj2 = Polar()
     prj2.theta_offset = np.pi
-    prj3 = Polar()
 
     # testing axes creation with plt.axes
     ax = plt.axes([0, 0, 1, 1], projection=prj)
     assert type(ax) == PolarAxes
-    ax_via_gca = plt.gca(projection=prj)
-    assert ax_via_gca is ax
-    plt.close()
-
-    # testing axes creation with gca
-    ax = plt.gca(projection=prj)
-    assert type(ax) == mpl.axes._subplots.subplot_class_factory(PolarAxes)
-    ax_via_gca = plt.gca(projection=prj)
-    assert ax_via_gca is ax
-    # try getting the axes given a different polar projection
-    with pytest.warns(UserWarning) as rec:
-        ax_via_gca = plt.gca(projection=prj2)
-        assert len(rec) == 1
-        assert 'Requested projection is different' in str(rec[0].message)
-    assert ax_via_gca is not ax
-    assert ax.get_theta_offset() == 0
-    assert ax_via_gca.get_theta_offset() == np.pi
-    # try getting the axes given an == (not is) polar projection
-    with pytest.warns(UserWarning):
-        ax_via_gca = plt.gca(projection=prj3)
-        assert len(rec) == 1
-        assert 'Requested projection is different' in str(rec[0].message)
-    assert ax_via_gca is ax
     plt.close()
 
     # testing axes creation with subplot
@@ -2231,14 +2778,48 @@ def test_pyplot_axes():
     plt.close(fig2)
 
 
-@image_comparison(['log_scales'])
 def test_log_scales():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.plot(np.log(np.linspace(0.1, 100)))
     ax.set_yscale('log', base=5.5)
     ax.invert_yaxis()
     ax.set_xscale('log', base=9.0)
+    xticks, yticks = [
+        [(t.get_loc(), t.label1.get_text()) for t in axis._update_ticks()]
+        for axis in [ax.xaxis, ax.yaxis]
+    ]
+    assert xticks == [
+        (1.0, '$\\mathdefault{9^{0}}$'),
+        (9.0, '$\\mathdefault{9^{1}}$'),
+        (81.0, '$\\mathdefault{9^{2}}$'),
+        (2.0, ''),
+        (3.0, ''),
+        (4.0, ''),
+        (5.0, ''),
+        (6.0, ''),
+        (7.0, ''),
+        (8.0, ''),
+        (18.0, ''),
+        (27.0, ''),
+        (36.0, ''),
+        (45.0, ''),
+        (54.0, ''),
+        (63.0, ''),
+        (72.0, ''),
+    ]
+    assert yticks == [
+        (0.18181818181818182, '$\\mathdefault{5.5^{-1}}$'),
+        (1.0, '$\\mathdefault{5.5^{0}}$'),
+        (5.5, '$\\mathdefault{5.5^{1}}$'),
+        (0.36363636363636365, ''),
+        (0.5454545454545454, ''),
+        (0.7272727272727273, ''),
+        (0.9090909090909092, ''),
+        (2.0, ''),
+        (3.0, ''),
+        (4.0, ''),
+        (5.0, ''),
+    ]
 
 
 def test_log_scales_no_data():
@@ -2249,13 +2830,12 @@ def test_log_scales_no_data():
 
 
 def test_log_scales_invalid():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.set_xscale('log')
-    with pytest.warns(UserWarning, match='Attempted to set non-positive'):
+    with pytest.warns(UserWarning, match='Attempt to set non-positive'):
         ax.set_xlim(-1, 10)
     ax.set_yscale('log')
-    with pytest.warns(UserWarning, match='Attempted to set non-positive'):
+    with pytest.warns(UserWarning, match='Attempt to set non-positive'):
         ax.set_ylim(-1, 10)
 
 
@@ -2273,8 +2853,7 @@ def test_stackplot():
 
     # Reuse testcase from above for a labeled data test
     data = {"x": x, "y1": y1, "y2": y2, "y3": y3}
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.stackplot("x", "y1", "y2", "y3", data=data)
     ax.set_xlim((0, 10))
     ax.set_ylim((0, 70))
@@ -2540,6 +3119,25 @@ def test_bxp_bad_positions():
         _bxp_test_helper(bxp_kwargs=dict(positions=[2, 3]))
 
 
+@image_comparison(['bxp_custom_capwidths.png'],
+                  savefig_kwarg={'dpi': 40},
+                  style='default')
+def test_bxp_custom_capwidths():
+    _bxp_test_helper(bxp_kwargs=dict(capwidths=[0.0, 0.1, 0.5, 1.0]))
+
+
+@image_comparison(['bxp_custom_capwidth.png'],
+                  savefig_kwarg={'dpi': 40},
+                  style='default')
+def test_bxp_custom_capwidth():
+    _bxp_test_helper(bxp_kwargs=dict(capwidths=0.6))
+
+
+def test_bxp_bad_capwidths():
+    with pytest.raises(ValueError):
+        _bxp_test_helper(bxp_kwargs=dict(capwidths=[1]))
+
+
 @image_comparison(['boxplot', 'boxplot'], tol=1.28, style='default')
 def test_boxplot():
     # Randomness used for bootstrapping.
@@ -2557,6 +3155,17 @@ def test_boxplot():
     fig, ax = plt.subplots()
     ax.boxplot("x", bootstrap=10000, notch=1, data=data)
     ax.set_ylim((-30, 30))
+
+
+@image_comparison(['boxplot_custom_capwidths.png'],
+                  savefig_kwarg={'dpi': 40}, style='default')
+def test_boxplot_custom_capwidths():
+
+    x = np.linspace(-7, 7, 140)
+    x = np.hstack([-25, x, 25])
+    fig, ax = plt.subplots()
+
+    ax.boxplot([x, x], notch=1, capwidths=[0.01, 0.2])
 
 
 @image_comparison(['boxplot_sym2.png'], remove_text=True, style='default')
@@ -2688,8 +3297,7 @@ def test_boxplot_with_CIarray():
 
     x = np.linspace(-7, 7, 140)
     x = np.hstack([-25, x, 25])
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     CIs = np.array([[-1.5, 3.], [-1., 3.5]])
 
     # show a boxplot with Matplotlib medians and confidence intervals, and
@@ -2772,7 +3380,7 @@ def test_boxplot_mod_artist_after_plotting():
 def test_vert_violinplot_baseline():
     # First 9 digits of frac(sqrt(2))
     np.random.seed(414213562)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax = plt.axes()
     ax.violinplot(data, positions=range(4), showmeans=0, showextrema=0,
                   showmedians=0)
@@ -2780,7 +3388,6 @@ def test_vert_violinplot_baseline():
     # Reuse testcase from above for a labeled data test
     data = {"d": data}
     fig, ax = plt.subplots()
-    ax = plt.axes()
     ax.violinplot("d", positions=range(4), showmeans=0, showextrema=0,
                   showmedians=0, data=data)
 
@@ -2790,7 +3397,7 @@ def test_vert_violinplot_showmeans():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(3))
     np.random.seed(732050807)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), showmeans=1, showextrema=0,
                   showmedians=0)
 
@@ -2800,7 +3407,7 @@ def test_vert_violinplot_showextrema():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(5))
     np.random.seed(236067977)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), showmeans=0, showextrema=1,
                   showmedians=0)
 
@@ -2810,7 +3417,7 @@ def test_vert_violinplot_showmedians():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(7))
     np.random.seed(645751311)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), showmeans=0, showextrema=0,
                   showmedians=1)
 
@@ -2820,7 +3427,7 @@ def test_vert_violinplot_showall():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(11))
     np.random.seed(316624790)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), showmeans=1, showextrema=1,
                   showmedians=1,
                   quantiles=[[0.1, 0.9], [0.2, 0.8], [0.3, 0.7], [0.4, 0.6]])
@@ -2831,7 +3438,7 @@ def test_vert_violinplot_custompoints_10():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(13))
     np.random.seed(605551275)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), showmeans=0, showextrema=0,
                   showmedians=0, points=10)
 
@@ -2841,7 +3448,7 @@ def test_vert_violinplot_custompoints_200():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(17))
     np.random.seed(123105625)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), showmeans=0, showextrema=0,
                   showmedians=0, points=200)
 
@@ -2851,7 +3458,7 @@ def test_horiz_violinplot_baseline():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(19))
     np.random.seed(358898943)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=0,
                   showextrema=0, showmedians=0)
 
@@ -2861,7 +3468,7 @@ def test_horiz_violinplot_showmedians():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(23))
     np.random.seed(795831523)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=0,
                   showextrema=0, showmedians=1)
 
@@ -2871,7 +3478,7 @@ def test_horiz_violinplot_showmeans():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(29))
     np.random.seed(385164807)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=1,
                   showextrema=0, showmedians=0)
 
@@ -2881,7 +3488,7 @@ def test_horiz_violinplot_showextrema():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(31))
     np.random.seed(567764362)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=0,
                   showextrema=1, showmedians=0)
 
@@ -2891,7 +3498,7 @@ def test_horiz_violinplot_showall():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(37))
     np.random.seed(82762530)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=1,
                   showextrema=1, showmedians=1,
                   quantiles=[[0.1, 0.9], [0.2, 0.8], [0.3, 0.7], [0.4, 0.6]])
@@ -2902,7 +3509,7 @@ def test_horiz_violinplot_custompoints_10():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(41))
     np.random.seed(403124237)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=0,
                   showextrema=0, showmedians=0, points=10)
 
@@ -2912,7 +3519,7 @@ def test_horiz_violinplot_custompoints_200():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(43))
     np.random.seed(557438524)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     ax.violinplot(data, positions=range(4), vert=False, showmeans=0,
                   showextrema=0, showmedians=0, points=200)
 
@@ -2921,7 +3528,7 @@ def test_violinplot_bad_positions():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(47))
     np.random.seed(855654600)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     with pytest.raises(ValueError):
         ax.violinplot(data, positions=range(5))
 
@@ -2930,7 +3537,7 @@ def test_violinplot_bad_widths():
     ax = plt.axes()
     # First 9 digits of frac(sqrt(53))
     np.random.seed(280109889)
-    data = [np.random.normal(size=100) for i in range(4)]
+    data = [np.random.normal(size=100) for _ in range(4)]
     with pytest.raises(ValueError):
         ax.violinplot(data, positions=range(4), widths=[1, 2, 3])
 
@@ -3020,7 +3627,9 @@ def test_tick_space_size_0():
 
 @image_comparison(['errorbar_basic', 'errorbar_mixed', 'errorbar_basic'])
 def test_errorbar():
-    x = np.arange(0.1, 4, 0.5)
+    # longdouble due to floating point rounding issues with certain
+    # computer chipsets
+    x = np.arange(0.1, 4, 0.5, dtype=np.longdouble)
     y = np.exp(-x)
 
     yerr = 0.1 + 0.2*np.sqrt(x)
@@ -3058,6 +3667,8 @@ def test_errorbar():
     ax.errorbar(x, y, yerr=[yerr_lower, 2*yerr], xerr=xerr,
                 fmt='o', ecolor='g', capthick=2)
     ax.set_title('Mixed sym., log y')
+    # Force limits due to floating point slop potentially expanding the range
+    ax.set_ylim(1e-2, 1e1)
 
     fig.suptitle('Variable errorbars')
 
@@ -3125,27 +3736,26 @@ def test_errorbar_limits():
     yerr = 0.2
     ls = 'dotted'
 
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
 
     # standard error bars
-    plt.errorbar(x, y, xerr=xerr, yerr=yerr, ls=ls, color='blue')
+    ax.errorbar(x, y, xerr=xerr, yerr=yerr, ls=ls, color='blue')
 
     # including upper limits
     uplims = np.zeros_like(x)
     uplims[[1, 5, 9]] = True
-    plt.errorbar(x, y+0.5, xerr=xerr, yerr=yerr, uplims=uplims, ls=ls,
-                 color='green')
+    ax.errorbar(x, y+0.5, xerr=xerr, yerr=yerr, uplims=uplims, ls=ls,
+                color='green')
 
     # including lower limits
     lolims = np.zeros_like(x)
     lolims[[2, 4, 8]] = True
-    plt.errorbar(x, y+1.0, xerr=xerr, yerr=yerr, lolims=lolims, ls=ls,
-                 color='red')
+    ax.errorbar(x, y+1.0, xerr=xerr, yerr=yerr, lolims=lolims, ls=ls,
+                color='red')
 
     # including upper and lower limits
-    plt.errorbar(x, y+1.5, marker='o', ms=8, xerr=xerr, yerr=yerr,
-                 lolims=lolims, uplims=uplims, ls=ls, color='magenta')
+    ax.errorbar(x, y+1.5, marker='o', ms=8, xerr=xerr, yerr=yerr,
+                lolims=lolims, uplims=uplims, ls=ls, color='magenta')
 
     # including xlower and xupper limits
     xerr = 0.2
@@ -3157,15 +3767,15 @@ def test_errorbar_limits():
     uplims = np.zeros_like(x)
     lolims[[6]] = True
     uplims[[3]] = True
-    plt.errorbar(x, y+2.1, marker='o', ms=8, xerr=xerr, yerr=yerr,
-                 xlolims=xlolims, xuplims=xuplims, uplims=uplims,
-                 lolims=lolims, ls='none', mec='blue', capsize=0,
-                 color='cyan')
+    ax.errorbar(x, y+2.1, marker='o', ms=8, xerr=xerr, yerr=yerr,
+                xlolims=xlolims, xuplims=xuplims, uplims=uplims,
+                lolims=lolims, ls='none', mec='blue', capsize=0,
+                color='cyan')
     ax.set_xlim((0, 5.5))
     ax.set_title('Errorbar upper and lower limits')
 
 
-def test_errobar_nonefmt():
+def test_errorbar_nonefmt():
     # Check that passing 'none' as a format still plots errorbars
     x = np.arange(5)
     y = np.arange(5)
@@ -3176,18 +3786,84 @@ def test_errobar_nonefmt():
         assert np.all(errbar.get_color() == mcolors.to_rgba('C0'))
 
 
-@image_comparison(['errorbar_with_prop_cycle.png'],
-                  style='mpl20', remove_text=True)
-def test_errorbar_with_prop_cycle():
-    _cycle = cycler(ls=['--', ':'], marker=['s', 's'], mfc=['k', 'w'])
+def test_errorbar_line_specific_kwargs():
+    # Check that passing line-specific keyword arguments will not result in
+    # errors.
+    x = np.arange(5)
+    y = np.arange(5)
+
+    plotline, _, _ = plt.errorbar(x, y, xerr=1, yerr=1, ls='None',
+                                  marker='s', fillstyle='full',
+                                  drawstyle='steps-mid',
+                                  dash_capstyle='round',
+                                  dash_joinstyle='miter',
+                                  solid_capstyle='butt',
+                                  solid_joinstyle='bevel')
+    assert plotline.get_fillstyle() == 'full'
+    assert plotline.get_drawstyle() == 'steps-mid'
+
+
+@check_figures_equal(extensions=['png'])
+def test_errorbar_with_prop_cycle(fig_test, fig_ref):
+    ax = fig_ref.subplots()
+    ax.errorbar(x=[2, 4, 10], y=[0, 1, 2], yerr=0.5,
+                ls='--', marker='s', mfc='k')
+    ax.errorbar(x=[2, 4, 10], y=[2, 3, 4], yerr=0.5, color='tab:green',
+                ls=':', marker='s', mfc='y')
+    ax.errorbar(x=[2, 4, 10], y=[4, 5, 6], yerr=0.5, fmt='tab:blue',
+                ls='-.', marker='o', mfc='c')
+    ax.set_xlim(1, 11)
+
+    _cycle = cycler(ls=['--', ':', '-.'], marker=['s', 's', 'o'],
+                    mfc=['k', 'y', 'c'], color=['b', 'g', 'r'])
     plt.rc("axes", prop_cycle=_cycle)
-    fig, ax = plt.subplots()
-    ax.errorbar(x=[2, 4, 10], y=[3, 2, 4], yerr=0.5)
-    ax.errorbar(x=[2, 4, 10], y=[6, 4, 2], yerr=0.5)
+    ax = fig_test.subplots()
+    ax.errorbar(x=[2, 4, 10], y=[0, 1, 2], yerr=0.5)
+    ax.errorbar(x=[2, 4, 10], y=[2, 3, 4], yerr=0.5, color='tab:green')
+    ax.errorbar(x=[2, 4, 10], y=[4, 5, 6], yerr=0.5, fmt='tab:blue')
+    ax.set_xlim(1, 11)
+
+
+def test_errorbar_every_invalid():
+    x = np.linspace(0, 1, 15)
+    y = x * (1-x)
+    yerr = y/6
+
+    ax = plt.figure().subplots()
+
+    with pytest.raises(ValueError, match='not a tuple of two integers'):
+        ax.errorbar(x, y, yerr, errorevery=(1, 2, 3))
+    with pytest.raises(ValueError, match='not a tuple of two integers'):
+        ax.errorbar(x, y, yerr, errorevery=(1.3, 3))
+    with pytest.raises(ValueError, match='not a valid NumPy fancy index'):
+        ax.errorbar(x, y, yerr, errorevery=[False, True])
+    with pytest.raises(ValueError, match='not a recognized value'):
+        ax.errorbar(x, y, yerr, errorevery='foobar')
+
+
+def test_xerr_yerr_not_negative():
+    ax = plt.figure().subplots()
+
+    with pytest.raises(ValueError,
+                       match="'xerr' must not contain negative values"):
+        ax.errorbar(x=[0], y=[0], xerr=[[-0.5], [1]], yerr=[[-0.5], [1]])
+    with pytest.raises(ValueError,
+                       match="'xerr' must not contain negative values"):
+        ax.errorbar(x=[0], y=[0], xerr=[[-0.5], [1]])
+    with pytest.raises(ValueError,
+                       match="'yerr' must not contain negative values"):
+        ax.errorbar(x=[0], y=[0], yerr=[[-0.5], [1]])
+    with pytest.raises(ValueError,
+                       match="'yerr' must not contain negative values"):
+        x = np.arange(5)
+        y = [datetime.datetime(2021, 9, i * 2 + 1) for i in x]
+        ax.errorbar(x=x,
+                    y=y,
+                    yerr=datetime.timedelta(days=-10))
 
 
 @check_figures_equal()
-def test_errorbar_offsets(fig_test, fig_ref):
+def test_errorbar_every(fig_test, fig_ref):
     x = np.linspace(0, 1, 15)
     y = x * (1-x)
     yerr = y/6
@@ -3198,7 +3874,7 @@ def test_errorbar_offsets(fig_test, fig_ref):
     for color, shift in zip('rgbk', [0, 0, 2, 7]):
         y += .02
 
-        # Using feature in question
+        # Check errorevery using an explicit offset and step.
         ax_test.errorbar(x, y, yerr, errorevery=(shift, 4),
                          capsize=4, c=color)
 
@@ -3208,20 +3884,58 @@ def test_errorbar_offsets(fig_test, fig_ref):
         ax_ref.errorbar(x[shift::4], y[shift::4], yerr[shift::4],
                         capsize=4, c=color, fmt='none')
 
+    # Check that markevery is propagated to line, without affecting errorbars.
+    ax_test.errorbar(x, y + 0.1, yerr, markevery=(1, 4), capsize=4, fmt='o')
+    ax_ref.plot(x[1::4], y[1::4] + 0.1, 'o', zorder=2.1)
+    ax_ref.errorbar(x, y + 0.1, yerr, capsize=4, fmt='none')
+
+    # Check that passing a slice to markevery/errorevery works.
+    ax_test.errorbar(x, y + 0.2, yerr, errorevery=slice(2, None, 3),
+                     markevery=slice(2, None, 3),
+                     capsize=4, c='C0', fmt='o')
+    ax_ref.plot(x[2::3], y[2::3] + 0.2, 'o', c='C0', zorder=2.1)
+    ax_ref.errorbar(x[2::3], y[2::3] + 0.2, yerr[2::3],
+                    capsize=4, c='C0', fmt='none')
+
+    # Check that passing an iterable to markevery/errorevery works.
+    ax_test.errorbar(x, y + 0.2, yerr, errorevery=[False, True, False] * 5,
+                     markevery=[False, True, False] * 5,
+                     capsize=4, c='C1', fmt='o')
+    ax_ref.plot(x[1::3], y[1::3] + 0.2, 'o', c='C1', zorder=2.1)
+    ax_ref.errorbar(x[1::3], y[1::3] + 0.2, yerr[1::3],
+                    capsize=4, c='C1', fmt='none')
+
+
+@pytest.mark.parametrize('elinewidth', [[1, 2, 3],
+                                        np.array([1, 2, 3]),
+                                        1])
+def test_errorbar_linewidth_type(elinewidth):
+    plt.errorbar([1, 2, 3], [1, 2, 3], yerr=[1, 2, 3], elinewidth=elinewidth)
+
+
+@check_figures_equal(extensions=["png"])
+def test_errorbar_nan(fig_test, fig_ref):
+    ax = fig_test.add_subplot()
+    xs = range(5)
+    ys = np.array([1, 2, np.nan, np.nan, 3])
+    es = np.array([4, 5, np.nan, np.nan, 6])
+    ax.errorbar(xs, ys, es)
+    ax = fig_ref.add_subplot()
+    ax.errorbar([0, 1], [1, 2], [4, 5])
+    ax.errorbar([4], [3], [6], fmt="C0")
+
 
 @image_comparison(['hist_stacked_stepfilled', 'hist_stacked_stepfilled'])
 def test_hist_stacked_stepfilled():
     # make some data
     d1 = np.linspace(1, 3, 20)
     d2 = np.linspace(0, 10, 50)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist((d1, d2), histtype="stepfilled", stacked=True)
 
     # Reuse testcase from above for a labeled data test
     data = {"x": (d1, d2)}
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist("x", histtype="stepfilled", stacked=True, data=data)
 
 
@@ -3230,8 +3944,7 @@ def test_hist_offset():
     # make some data
     d1 = np.linspace(0, 10, 50)
     d2 = np.linspace(1, 3, 20)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist(d1, bottom=5)
     ax.hist(d2, bottom=15)
 
@@ -3240,8 +3953,7 @@ def test_hist_offset():
 def test_hist_step():
     # make some data
     d1 = np.linspace(1, 3, 20)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist(d1, histtype="step")
     ax.set_ylim(0, 10)
     ax.set_xlim(-1, 5)
@@ -3252,8 +3964,7 @@ def test_hist_step_horiz():
     # make some data
     d1 = np.linspace(0, 10, 50)
     d2 = np.linspace(1, 3, 20)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist((d1, d2), histtype="step", orientation="horizontal")
 
 
@@ -3264,8 +3975,7 @@ def test_hist_stacked_weighted():
     d2 = np.linspace(1, 3, 20)
     w1 = np.linspace(0.01, 3.5, 50)
     w2 = np.linspace(0.05, 2., 20)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist((d1, d2), weights=(w1, w2), histtype="stepfilled", stacked=True)
 
 
@@ -3274,30 +3984,106 @@ def test_hist_stacked_weighted():
 @image_comparison(['stem.png'], style='mpl20', remove_text=True)
 def test_stem(use_line_collection):
     x = np.linspace(0.1, 2 * np.pi, 100)
-    args = (x, np.cos(x))
-    # Label is a single space to force a legend to be drawn, but to avoid any
-    # text being drawn
-    kwargs = dict(linefmt='C2-.', markerfmt='k+', basefmt='C1-.',
-                  label=' ', use_line_collection=use_line_collection)
 
     fig, ax = plt.subplots()
-    ax.stem(*args, **kwargs)
-
+    # Label is a single space to force a legend to be drawn, but to avoid any
+    # text being drawn
+    if use_line_collection:
+        ax.stem(x, np.cos(x),
+                linefmt='C2-.', markerfmt='k+', basefmt='C1-.', label=' ')
+    else:
+        with pytest.warns(MatplotlibDeprecationWarning, match='deprecated'):
+            ax.stem(x, np.cos(x),
+                    linefmt='C2-.', markerfmt='k+', basefmt='C1-.', label=' ',
+                    use_line_collection=False)
     ax.legend()
 
 
 def test_stem_args():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    """Test that stem() correctly identifies x and y values."""
+    def _assert_equal(stem_container, expected):
+        x, y = map(list, stem_container.markerline.get_data())
+        assert x == expected[0]
+        assert y == expected[1]
 
-    x = list(range(10))
-    y = list(range(10))
+    fig, ax = plt.subplots()
+
+    x = [1, 3, 5]
+    y = [9, 8, 7]
 
     # Test the call signatures
-    ax.stem(y)
-    ax.stem(x, y)
-    ax.stem(x, y, 'r--')
-    ax.stem(x, y, 'r--', basefmt='b--')
+    _assert_equal(ax.stem(y), expected=([0, 1, 2], y))
+    _assert_equal(ax.stem(x, y), expected=(x, y))
+    _assert_equal(ax.stem(x, y, linefmt='r--'), expected=(x, y))
+    _assert_equal(ax.stem(x, y, 'r--'), expected=(x, y))
+    _assert_equal(ax.stem(x, y, linefmt='r--', basefmt='b--'), expected=(x, y))
+    _assert_equal(ax.stem(y, linefmt='r--'), expected=([0, 1, 2], y))
+    _assert_equal(ax.stem(y, 'r--'), expected=([0, 1, 2], y))
+
+
+def test_stem_markerfmt():
+    """Test that stem(..., markerfmt=...) produces the intended markers."""
+    def _assert_equal(stem_container, linecolor=None, markercolor=None,
+                      marker=None):
+        """
+        Check that the given StemContainer has the properties listed as
+        keyword-arguments.
+        """
+        if linecolor is not None:
+            assert mcolors.same_color(
+                stem_container.stemlines.get_color(),
+                linecolor)
+        if markercolor is not None:
+            assert mcolors.same_color(
+                stem_container.markerline.get_color(),
+                markercolor)
+        if marker is not None:
+            assert stem_container.markerline.get_marker() == marker
+        assert stem_container.markerline.get_linestyle() == 'None'
+
+    fig, ax = plt.subplots()
+
+    x = [1, 3, 5]
+    y = [9, 8, 7]
+
+    # no linefmt
+    _assert_equal(ax.stem(x, y), markercolor='C0', marker='o')
+    _assert_equal(ax.stem(x, y, markerfmt='x'), markercolor='C0', marker='x')
+    _assert_equal(ax.stem(x, y, markerfmt='rx'), markercolor='r', marker='x')
+
+    # positional linefmt
+    _assert_equal(
+        ax.stem(x, y, 'r'),  # marker color follows linefmt if not given
+        linecolor='r', markercolor='r', marker='o')
+    _assert_equal(
+        ax.stem(x, y, 'rx'),  # the marker is currently not taken from linefmt
+        linecolor='r', markercolor='r', marker='o')
+    _assert_equal(
+        ax.stem(x, y, 'r', markerfmt='x'),  # only marker type specified
+        linecolor='r', markercolor='r', marker='x')
+    _assert_equal(
+        ax.stem(x, y, 'r', markerfmt='g'),  # only marker color specified
+        linecolor='r', markercolor='g', marker='o')
+    _assert_equal(
+        ax.stem(x, y, 'r', markerfmt='gx'),  # marker type and color specified
+        linecolor='r', markercolor='g', marker='x')
+    _assert_equal(
+        ax.stem(x, y, 'r', markerfmt=' '),  # markerfmt=' ' for no marker
+        linecolor='r', markercolor='r', marker='None')
+    _assert_equal(
+        ax.stem(x, y, 'r', markerfmt=''),  # markerfmt='' for no marker
+        linecolor='r', markercolor='r', marker='None')
+
+    # with linefmt kwarg
+    _assert_equal(
+        ax.stem(x, y, linefmt='r'),
+        linecolor='r', markercolor='r', marker='o')
+    _assert_equal(
+        ax.stem(x, y, linefmt='r', markerfmt='x'),
+        linecolor='r', markercolor='r', marker='x')
+    _assert_equal(
+        ax.stem(x, y, linefmt='r', markerfmt='gx'),
+        linecolor='r', markercolor='g', marker='x')
 
 
 def test_stem_dates():
@@ -3305,7 +4091,26 @@ def test_stem_dates():
     xs = [dateutil.parser.parse("2013-9-28 11:00:00"),
           dateutil.parser.parse("2013-9-28 12:00:00")]
     ys = [100, 200]
-    ax.stem(xs, ys, "*-")
+    ax.stem(xs, ys)
+
+
+@pytest.mark.parametrize("use_line_collection", [True, False],
+                         ids=['w/ line collection', 'w/o line collection'])
+@image_comparison(['stem_orientation.png'], style='mpl20', remove_text=True)
+def test_stem_orientation(use_line_collection):
+    x = np.linspace(0.1, 2*np.pi, 50)
+
+    fig, ax = plt.subplots()
+    if use_line_collection:
+        ax.stem(x, np.cos(x),
+                linefmt='C2-.', markerfmt='kx', basefmt='C1-.',
+                orientation='horizontal')
+    else:
+        with pytest.warns(MatplotlibDeprecationWarning, match='deprecated'):
+            ax.stem(x, np.cos(x),
+                    linefmt='C2-.', markerfmt='kx', basefmt='C1-.',
+                    use_line_collection=False,
+                    orientation='horizontal')
 
 
 @image_comparison(['hist_stacked_stepfilled_alpha'])
@@ -3313,8 +4118,7 @@ def test_hist_stacked_stepfilled_alpha():
     # make some data
     d1 = np.linspace(1, 3, 20)
     d2 = np.linspace(0, 10, 50)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist((d1, d2), histtype="stepfilled", stacked=True, alpha=0.5)
 
 
@@ -3323,8 +4127,7 @@ def test_hist_stacked_step():
     # make some data
     d1 = np.linspace(1, 3, 20)
     d2 = np.linspace(0, 10, 50)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist((d1, d2), histtype="step", stacked=True)
 
 
@@ -3341,8 +4144,7 @@ def test_hist_stacked_density():
 def test_hist_step_bottom():
     # make some data
     d1 = np.linspace(1, 3, 20)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist(d1, bottom=np.arange(10), histtype="stepfilled")
 
 
@@ -3488,32 +4290,36 @@ def test_hist_stacked_bar():
               (0.0, 1.0, 0.6549834156005998), (0.0, 0.6569064625276622, 1.0),
               (0.28302699607823545, 0.0, 1.0), (0.6849123462299822, 0.0, 1.0)]
     labels = ['green', 'orange', ' yellow', 'magenta', 'black']
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist(d, bins=10, histtype='barstacked', align='mid', color=colors,
             label=labels)
-    ax.legend(loc='upper right', bbox_to_anchor=(1.0, 1.0), ncol=1)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.0, 1.0), ncols=1)
+
+
+def test_hist_barstacked_bottom_unchanged():
+    b = np.array([10, 20])
+    plt.hist([[0, 1], [0, 1]], 2, histtype="barstacked", bottom=b)
+    assert b.tolist() == [10, 20]
 
 
 def test_hist_emptydata():
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.hist([[], range(10), range(10)], histtype="step")
 
 
 def test_hist_labels():
     # test singleton labels OK
     fig, ax = plt.subplots()
-    l = ax.hist([0, 1], label=0)
-    assert l[2][0].get_label() == '0'
-    l = ax.hist([0, 1], label=[0])
-    assert l[2][0].get_label() == '0'
-    l = ax.hist([0, 1], label=None)
-    assert l[2][0].get_label() == '_nolegend_'
-    l = ax.hist([0, 1], label='0')
-    assert l[2][0].get_label() == '0'
-    l = ax.hist([0, 1], label='00')
-    assert l[2][0].get_label() == '00'
+    _, _, bars = ax.hist([0, 1], label=0)
+    assert bars[0].get_label() == '0'
+    _, _, bars = ax.hist([0, 1], label=[0])
+    assert bars[0].get_label() == '0'
+    _, _, bars = ax.hist([0, 1], label=None)
+    assert bars[0].get_label() == '_nolegend_'
+    _, _, bars = ax.hist([0, 1], label='0')
+    assert bars[0].get_label() == '0'
+    _, _, bars = ax.hist([0, 1], label='00')
+    assert bars[0].get_label() == '00'
 
 
 @image_comparison(['transparent_markers'], remove_text=True)
@@ -3521,8 +4327,7 @@ def test_transparent_markers():
     np.random.seed(0)
     data = np.random.random(50)
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.plot(data, 'D', mfc='none', markersize=100)
 
 
@@ -3548,7 +4353,7 @@ def test_mollweide_grid():
     # test that both horizontal and vertical gridlines appear on the Mollweide
     # projection
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='mollweide')
+    ax = fig.add_subplot(projection='mollweide')
     ax.grid()
 
 
@@ -3556,7 +4361,7 @@ def test_mollweide_forward_inverse_closure():
     # test that the round-trip Mollweide forward->inverse transformation is an
     # approximate identity
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='mollweide')
+    ax = fig.add_subplot(projection='mollweide')
 
     # set up 1-degree grid in longitude, latitude
     lon = np.linspace(-np.pi, np.pi, 360)
@@ -3578,7 +4383,7 @@ def test_mollweide_inverse_forward_closure():
     # test that the round-trip Mollweide inverse->forward transformation is an
     # approximate identity
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='mollweide')
+    ax = fig.add_subplot(projection='mollweide')
 
     # set up grid in x, y
     x = np.linspace(0, 1, 500)
@@ -3600,8 +4405,7 @@ def test_alpha():
     np.random.seed(0)
     data = np.random.random(50)
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
 
     # alpha=.5 markers, solid line
     ax.plot(data, '-D', color=[1, 0, 0], mfc=[1, 0, 0, .5],
@@ -3653,7 +4457,7 @@ def test_eventplot():
     linelengths = linelengths1 + linelengths2
 
     fig = plt.figure()
-    axobj = fig.add_subplot(111)
+    axobj = fig.add_subplot()
     colls = axobj.eventplot(data, colors=colors, lineoffsets=lineoffsets,
                             linelengths=linelengths)
 
@@ -3663,7 +4467,7 @@ def test_eventplot():
     # Reuse testcase from above for a labeled data test
     data = {"pos": data, "c": colors, "lo": lineoffsets, "ll": linelengths}
     fig = plt.figure()
-    axobj = fig.add_subplot(111)
+    axobj = fig.add_subplot()
     colls = axobj.eventplot("pos", colors="c", lineoffsets="lo",
                             linelengths="ll", data=data)
     num_collections = len(colls)
@@ -3683,7 +4487,7 @@ def test_eventplot_defaults():
     data = data1 + data2
 
     fig = plt.figure()
-    axobj = fig.add_subplot(111)
+    axobj = fig.add_subplot()
     axobj.eventplot(data)
 
 
@@ -3694,7 +4498,7 @@ def test_eventplot_defaults():
 ])
 def test_eventplot_colors(colors):
     """Test the *colors* parameter of eventplot. Inspired by issue #8193."""
-    data = [[i] for i in range(4)]  # 4 successive events of different nature
+    data = [[0], [1], [2], [3]]  # 4 successive events of different nature
 
     # Build the list of the expected colors
     expected = [c if c is not None else 'C0' for c in colors]
@@ -3717,8 +4521,8 @@ def test_eventplot_colors(colors):
 def test_eventplot_problem_kwargs(recwarn):
     """
     test that 'singular' versions of LineCollection props raise an
-    IgnoredKeywordWarning rather than overriding the 'plural' versions (e.g.
-    to prevent 'color' from overriding 'colors', see issue #4297)
+    MatplotlibDeprecationWarning rather than overriding the 'plural' versions
+    (e.g., to prevent 'color' from overriding 'colors', see issue #4297)
     """
     np.random.seed(0)
 
@@ -3727,7 +4531,7 @@ def test_eventplot_problem_kwargs(recwarn):
     data = [data1, data2]
 
     fig = plt.figure()
-    axobj = fig.add_subplot(111)
+    axobj = fig.add_subplot()
 
     axobj.eventplot(data,
                     colors=['r', 'b'],
@@ -3737,7 +4541,6 @@ def test_eventplot_problem_kwargs(recwarn):
                     linestyles=['solid', 'dashed'],
                     linestyle=['dashdot', 'dotted'])
 
-    # check that three IgnoredKeywordWarnings were raised
     assert len(recwarn) == 3
     assert all(issubclass(wi.category, MatplotlibDeprecationWarning)
                for wi in recwarn)
@@ -3750,24 +4553,42 @@ def test_empty_eventplot():
 
 
 @pytest.mark.parametrize('data', [[[]], [[], [0, 1]], [[0, 1], []]])
-@pytest.mark.parametrize(
-    'orientation', ['_empty', 'vertical', 'horizontal', None, 'none'])
+@pytest.mark.parametrize('orientation', [None, 'vertical', 'horizontal'])
 def test_eventplot_orientation(data, orientation):
     """Introduced when fixing issue #6412."""
-    opts = {} if orientation == "_empty" else {'orientation': orientation}
+    opts = {} if orientation is None else {'orientation': orientation}
     fig, ax = plt.subplots(1, 1)
-    with (pytest.warns(MatplotlibDeprecationWarning)
-          if orientation in [None, 'none'] else nullcontext()):
-        ax.eventplot(data, **opts)
+    ax.eventplot(data, **opts)
     plt.draw()
+
+
+@check_figures_equal(extensions=['png'])
+def test_eventplot_units_list(fig_test, fig_ref):
+    # test that list of lists converted properly:
+    ts_1 = [datetime.datetime(2021, 1, 1), datetime.datetime(2021, 1, 2),
+            datetime.datetime(2021, 1, 3)]
+    ts_2 = [datetime.datetime(2021, 1, 15), datetime.datetime(2021, 1, 16)]
+
+    ax = fig_ref.subplots()
+    ax.eventplot(ts_1, lineoffsets=0)
+    ax.eventplot(ts_2, lineoffsets=1)
+
+    ax = fig_test.subplots()
+    ax.eventplot([ts_1, ts_2])
 
 
 @image_comparison(['marker_styles.png'], remove_text=True)
 def test_marker_styles():
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    for y, marker in enumerate(sorted(matplotlib.markers.MarkerStyle.markers,
-                                      key=lambda x: str(type(x))+str(x))):
+    fig, ax = plt.subplots()
+    # Since generation of the test image, None was removed but 'none' was
+    # added. By moving 'none' to the front (=former sorted place of None)
+    # we can avoid regenerating the test image. This can be removed if the
+    # test image has to be regenerated for other reasons.
+    markers = sorted(matplotlib.markers.MarkerStyle.markers,
+                     key=lambda x: str(type(x))+str(x))
+    markers.remove('none')
+    markers = ['none', *markers]
+    for y, marker in enumerate(markers):
         ax.plot((y % 2)*5 + np.arange(10)*10, np.ones(10)*10*y, linestyle='',
                 marker=marker, markersize=10+y/5, label=marker)
 
@@ -3787,8 +4608,7 @@ def test_vertex_markers():
     data = list(range(10))
     marker_as_tuple = ((-1, -1), (1, -1), (1, 1), (-1, 1))
     marker_as_list = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.plot(data, linestyle='', marker=marker_as_tuple, mfc='k')
     ax.plot(data[::-1], linestyle='', marker=marker_as_list, mfc='b')
     ax.set_xlim([-1, 10])
@@ -3826,6 +4646,19 @@ def test_eb_line_zorder():
 
 
 @check_figures_equal()
+def test_axline_loglog(fig_test, fig_ref):
+    ax = fig_test.subplots()
+    ax.set(xlim=(0.1, 10), ylim=(1e-3, 1))
+    ax.loglog([.3, .6], [.3, .6], ".-")
+    ax.axline((1, 1e-3), (10, 1e-2), c="k")
+
+    ax = fig_ref.subplots()
+    ax.set(xlim=(0.1, 10), ylim=(1e-3, 1))
+    ax.loglog([.3, .6], [.3, .6], ".-")
+    ax.loglog([1, 10], [1e-3, 1e-2], c="k")
+
+
+@check_figures_equal()
 def test_axline(fig_test, fig_ref):
     ax = fig_test.subplots()
     ax.set(xlim=(-1, 1), ylim=(-1, 1))
@@ -3848,6 +4681,43 @@ def test_axline(fig_test, fig_ref):
     ax.axvline(-0.5, color='C5')
 
 
+@check_figures_equal()
+def test_axline_transaxes(fig_test, fig_ref):
+    ax = fig_test.subplots()
+    ax.set(xlim=(-1, 1), ylim=(-1, 1))
+    ax.axline((0, 0), slope=1, transform=ax.transAxes)
+    ax.axline((1, 0.5), slope=1, color='C1', transform=ax.transAxes)
+    ax.axline((0.5, 0.5), slope=0, color='C2', transform=ax.transAxes)
+    ax.axline((0.5, 0), (0.5, 1), color='C3', transform=ax.transAxes)
+
+    ax = fig_ref.subplots()
+    ax.set(xlim=(-1, 1), ylim=(-1, 1))
+    ax.plot([-1, 1], [-1, 1])
+    ax.plot([0, 1], [-1, 0], color='C1')
+    ax.plot([-1, 1], [0, 0], color='C2')
+    ax.plot([0, 0], [-1, 1], color='C3')
+
+
+@check_figures_equal()
+def test_axline_transaxes_panzoom(fig_test, fig_ref):
+    # test that it is robust against pan/zoom and
+    # figure resize after plotting
+    ax = fig_test.subplots()
+    ax.set(xlim=(-1, 1), ylim=(-1, 1))
+    ax.axline((0, 0), slope=1, transform=ax.transAxes)
+    ax.axline((0.5, 0.5), slope=2, color='C1', transform=ax.transAxes)
+    ax.axline((0.5, 0.5), slope=0, color='C2', transform=ax.transAxes)
+    ax.set(xlim=(0, 5), ylim=(0, 10))
+    fig_test.set_size_inches(3, 3)
+
+    ax = fig_ref.subplots()
+    ax.set(xlim=(0, 5), ylim=(0, 10))
+    fig_ref.set_size_inches(3, 3)
+    ax.plot([0, 5], [0, 5])
+    ax.plot([0, 5], [0, 10], color='C1')
+    ax.plot([0, 5], [5, 5], color='C2')
+
+
 def test_axline_args():
     """Exactly one of *xy2* and *slope* must be specified."""
     fig, ax = plt.subplots()
@@ -3862,6 +4732,10 @@ def test_axline_args():
     ax.set_yscale('log')
     with pytest.raises(TypeError):
         ax.axline((0, 0), slope=1)
+    ax.set_yscale('linear')
+    with pytest.raises(ValueError):
+        ax.axline((0, 0), (0, 0))  # two identical points are not allowed
+        plt.draw()
 
 
 @image_comparison(['vlines_basic', 'vlines_with_nan', 'vlines_masked'],
@@ -4009,8 +4883,7 @@ def test_step_linestyle():
 @image_comparison(['mixed_collection'], remove_text=True)
 def test_mixed_collection():
     # First illustrate basic pyplot interface, using defaults where possible.
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
 
     c = mpatches.Circle((8, 8), radius=4, facecolor='none', edgecolor='green')
 
@@ -4157,6 +5030,33 @@ def test_specgram_fs_none():
     assert xmin == 32 and xmax == 96
 
 
+@check_figures_equal(extensions=["png"])
+def test_specgram_origin_rcparam(fig_test, fig_ref):
+    """Test specgram ignores image.origin rcParam and uses origin 'upper'."""
+    t = np.arange(500)
+    signal = np.sin(t)
+
+    plt.rcParams["image.origin"] = 'upper'
+
+    # Reference: First graph using default origin in imshow (upper),
+    fig_ref.subplots().specgram(signal)
+
+    # Try to overwrite the setting trying to flip the specgram
+    plt.rcParams["image.origin"] = 'lower'
+
+    # Test: origin='lower' should be ignored
+    fig_test.subplots().specgram(signal)
+
+
+def test_specgram_origin_kwarg():
+    """Ensure passing origin as a kwarg raises a TypeError."""
+    t = np.arange(500)
+    signal = np.sin(t)
+
+    with pytest.raises(TypeError):
+        plt.specgram(signal, origin='lower')
+
+
 @image_comparison(
     ["psd_freqs.png", "csd_freqs.png", "psd_noise.png", "csd_noise.png"],
     remove_text=True, tol=0.002)
@@ -4233,31 +5133,55 @@ def test_spectrum():
             ax.set(xlabel="", ylabel="")
 
 
+def test_psd_csd_edge_cases():
+    # Inverted yaxis or fully zero inputs used to throw exceptions.
+    axs = plt.figure().subplots(2)
+    for ax in axs:
+        ax.yaxis.set(inverted=True)
+    with np.errstate(divide="ignore"):
+        axs[0].psd(np.zeros(5))
+        axs[1].csd(np.zeros(5), np.zeros(5))
+
+
+@check_figures_equal(extensions=['png'])
+def test_twin_remove(fig_test, fig_ref):
+    ax_test = fig_test.add_subplot()
+    ax_twinx = ax_test.twinx()
+    ax_twiny = ax_test.twiny()
+    ax_twinx.remove()
+    ax_twiny.remove()
+
+    ax_ref = fig_ref.add_subplot()
+    # Ideally we also undo tick changes when calling ``remove()``, but for now
+    # manually set the ticks of the reference image to match the test image
+    ax_ref.xaxis.tick_bottom()
+    ax_ref.yaxis.tick_left()
+
+
 @image_comparison(['twin_spines.png'], remove_text=True)
 def test_twin_spines():
 
     def make_patch_spines_invisible(ax):
         ax.set_frame_on(True)
         ax.patch.set_visible(False)
-        for sp in ax.spines.values():
-            sp.set_visible(False)
+        ax.spines[:].set_visible(False)
 
     fig = plt.figure(figsize=(4, 3))
     fig.subplots_adjust(right=0.75)
 
-    host = fig.add_subplot(111)
+    host = fig.add_subplot()
     par1 = host.twinx()
     par2 = host.twinx()
 
     # Offset the right spine of par2.  The ticks and label have already been
     # placed on the right by twinx above.
-    par2.spines["right"].set_position(("axes", 1.2))
+    par2.spines.right.set_position(("axes", 1.2))
     # Having been created by twinx, par2 has its frame off, so the line of
     # its detached spine is invisible.  First, activate the frame but make
     # the patch and spines invisible.
     make_patch_spines_invisible(par2)
     # Second, show the right spine.
-    par2.spines["right"].set_visible(True)
+    par2.spines.right.set_visible(True)
 
     p1, = host.plot([0, 1, 2], [0, 1, 2], "b-")
     p2, = par1.plot([0, 1, 2], [0, 3, 2], "r-")
@@ -4341,13 +5265,61 @@ def test_grid():
     assert not ax.xaxis.majorTicks[0].gridline.get_visible()
 
 
+def test_reset_grid():
+    fig, ax = plt.subplots()
+    ax.tick_params(reset=True, which='major', labelsize=10)
+    assert not ax.xaxis.majorTicks[0].gridline.get_visible()
+    ax.grid(color='red')  # enables grid
+    assert ax.xaxis.majorTicks[0].gridline.get_visible()
+
+    with plt.rc_context({'axes.grid': True}):
+        ax.clear()
+        ax.tick_params(reset=True, which='major', labelsize=10)
+        assert ax.xaxis.majorTicks[0].gridline.get_visible()
+
+
+@check_figures_equal(extensions=['png'])
+def test_reset_ticks(fig_test, fig_ref):
+    for fig in [fig_ref, fig_test]:
+        ax = fig.add_subplot()
+        ax.grid(True)
+        ax.tick_params(
+            direction='in', length=10, width=5, color='C0', pad=12,
+            labelsize=14, labelcolor='C1', labelrotation=45,
+            grid_color='C2', grid_alpha=0.8, grid_linewidth=3,
+            grid_linestyle='--')
+        fig.draw_without_rendering()
+
+    # After we've changed any setting on ticks, reset_ticks will mean
+    # re-creating them from scratch. This *should* appear the same as not
+    # resetting them.
+    for ax in fig_test.axes:
+        ax.xaxis.reset_ticks()
+        ax.yaxis.reset_ticks()
+
+
 def test_vline_limit():
     fig = plt.figure()
     ax = fig.gca()
     ax.axvline(0.5)
     ax.plot([-0.1, 0, 0.2, 0.1])
-    (ymin, ymax) = ax.get_ylim()
     assert_allclose(ax.get_ylim(), (-.1, .2))
+
+
+@pytest.mark.parametrize('fv, fh, args', [[plt.axvline, plt.axhline, (1,)],
+                                          [plt.axvspan, plt.axhspan, (1, 1)]])
+def test_axline_minmax(fv, fh, args):
+    bad_lim = matplotlib.dates.num2date(1)
+    # Check vertical functions
+    with pytest.raises(ValueError, match='ymin must be a single scalar value'):
+        fv(*args, ymin=bad_lim, ymax=1)
+    with pytest.raises(ValueError, match='ymax must be a single scalar value'):
+        fv(*args, ymin=1, ymax=bad_lim)
+    # Check horizontal functions
+    with pytest.raises(ValueError, match='xmin must be a single scalar value'):
+        fh(*args, xmin=bad_lim, xmax=1)
+    with pytest.raises(ValueError, match='xmax must be a single scalar value'):
+        fh(*args, xmin=1, xmax=bad_lim)
 
 
 def test_empty_shared_subplots():
@@ -4406,6 +5378,57 @@ def test_shared_with_aspect_3():
             assert round(expected, 4) == round(ax.get_aspect(), 4)
 
 
+def test_shared_aspect_error():
+    fig, axes = plt.subplots(1, 2, sharex=True, sharey=True)
+    axes[0].axis("equal")
+    with pytest.raises(RuntimeError, match=r"set_aspect\(..., adjustable="):
+        fig.draw_without_rendering()
+
+
+@pytest.mark.parametrize('err, args, kwargs, match',
+                         ((TypeError, (1, 2), {},
+                           r"axis\(\) takes 0 or 1 positional arguments but 2"
+                           " were given"),
+                          (ValueError, ('foo', ), {},
+                           "Unrecognized string 'foo' to axis; try 'on' or "
+                           "'off'"),
+                          (TypeError, ([1, 2], ), {},
+                           "the first argument to axis*"),
+                          (TypeError, tuple(), {'foo': None},
+                           r"axis\(\) got an unexpected keyword argument "
+                           "'foo'"),
+                          ))
+def test_axis_errors(err, args, kwargs, match):
+    with pytest.raises(err, match=match):
+        plt.axis(*args, **kwargs)
+
+
+def test_axis_method_errors():
+    ax = plt.gca()
+    with pytest.raises(ValueError, match="unknown value for which: 'foo'"):
+        ax.get_xaxis_transform('foo')
+    with pytest.raises(ValueError, match="unknown value for which: 'foo'"):
+        ax.get_yaxis_transform('foo')
+    with pytest.raises(TypeError, match="Cannot supply both positional and"):
+        ax.set_prop_cycle('foo', label='bar')
+    with pytest.raises(ValueError, match="argument must be among"):
+        ax.set_anchor('foo')
+    with pytest.raises(ValueError, match="scilimits must be a sequence"):
+        ax.ticklabel_format(scilimits=1)
+    with pytest.raises(TypeError, match="Specifying 'loc' is disallowed"):
+        ax.set_xlabel('foo', loc='left', x=1)
+    with pytest.raises(TypeError, match="Specifying 'loc' is disallowed"):
+        ax.set_ylabel('foo', loc='top', y=1)
+    with pytest.raises(TypeError, match="Cannot pass both 'left'"):
+        ax.set_xlim(left=0, xmin=1)
+    with pytest.raises(TypeError, match="Cannot pass both 'right'"):
+        ax.set_xlim(right=0, xmax=1)
+    with pytest.raises(TypeError, match="Cannot pass both 'bottom'"):
+        ax.set_ylim(bottom=0, ymin=1)
+    with pytest.raises(TypeError, match="Cannot pass both 'top'"):
+        ax.set_ylim(top=0, ymax=1)
+
+
 @pytest.mark.parametrize('twin', ('x', 'y'))
 def test_twin_with_aspect(twin):
     fig, ax = plt.subplots()
@@ -4424,14 +5447,14 @@ def test_relim_visible_only():
     y2 = (-10., 30.)
 
     fig = matplotlib.figure.Figure()
-    ax = fig.add_subplot(111)
+    ax = fig.add_subplot()
     ax.plot(x1, y1)
     assert ax.get_xlim() == x1
     assert ax.get_ylim() == y1
-    l = ax.plot(x2, y2)
+    line, = ax.plot(x2, y2)
     assert ax.get_xlim() == x2
     assert ax.get_ylim() == y2
-    l[0].set_visible(False)
+    line.set_visible(False)
     assert ax.get_xlim() == x2
     assert ax.get_ylim() == y2
 
@@ -4465,7 +5488,7 @@ def test_pie_default():
 
 
 @image_comparison(['pie_linewidth_0', 'pie_linewidth_0', 'pie_linewidth_0'],
-                  extensions=['png'])
+                  extensions=['png'], style='mpl20')
 def test_pie_linewidth_0():
     # The slices will be ordered and plotted counter-clockwise.
     labels = 'Frogs', 'Hogs', 'Dogs', 'Logs'
@@ -4497,7 +5520,7 @@ def test_pie_linewidth_0():
     plt.axis('equal')
 
 
-@image_comparison(['pie_center_radius.png'])
+@image_comparison(['pie_center_radius.png'], style='mpl20')
 def test_pie_center_radius():
     # The slices will be ordered and plotted counter-clockwise.
     labels = 'Frogs', 'Hogs', 'Dogs', 'Logs'
@@ -4509,14 +5532,15 @@ def test_pie_center_radius():
             autopct='%1.1f%%', shadow=True, startangle=90,
             wedgeprops={'linewidth': 0}, center=(1, 2), radius=1.5)
 
-    plt.annotate("Center point", xy=(1, 2), xytext=(1, 1.5),
+    plt.annotate("Center point", xy=(1, 2), xytext=(1, 1.3),
                  arrowprops=dict(arrowstyle="->",
-                                 connectionstyle="arc3"))
+                                 connectionstyle="arc3"),
+                 bbox=dict(boxstyle="square", facecolor="lightgrey"))
     # Set aspect ratio to be equal so that pie is drawn as a circle.
     plt.axis('equal')
 
 
-@image_comparison(['pie_linewidth_2.png'])
+@image_comparison(['pie_linewidth_2.png'], style='mpl20')
 def test_pie_linewidth_2():
     # The slices will be ordered and plotted counter-clockwise.
     labels = 'Frogs', 'Hogs', 'Dogs', 'Logs'
@@ -4531,7 +5555,7 @@ def test_pie_linewidth_2():
     plt.axis('equal')
 
 
-@image_comparison(['pie_ccw_true.png'])
+@image_comparison(['pie_ccw_true.png'], style='mpl20')
 def test_pie_ccw_true():
     # The slices will be ordered and plotted counter-clockwise.
     labels = 'Frogs', 'Hogs', 'Dogs', 'Logs'
@@ -4546,7 +5570,7 @@ def test_pie_ccw_true():
     plt.axis('equal')
 
 
-@image_comparison(['pie_frame_grid.png'])
+@image_comparison(['pie_frame_grid.png'], style='mpl20')
 def test_pie_frame_grid():
     # The slices will be ordered and plotted counter-clockwise.
     labels = 'Frogs', 'Hogs', 'Dogs', 'Logs'
@@ -4573,7 +5597,7 @@ def test_pie_frame_grid():
     plt.axis('equal')
 
 
-@image_comparison(['pie_rotatelabels_true.png'])
+@image_comparison(['pie_rotatelabels_true.png'], style='mpl20')
 def test_pie_rotatelabels_true():
     # The slices will be ordered and plotted counter-clockwise.
     labels = 'Hogwarts', 'Frogs', 'Dogs', 'Logs'
@@ -4631,12 +5655,6 @@ def test_pie_get_negative_values():
         ax.pie([5, 5, -3], explode=[0, .1, .2])
 
 
-def test_normalize_kwarg_warn_pie():
-    fig, ax = plt.subplots()
-    with pytest.warns(MatplotlibDeprecationWarning):
-        ax.pie(x=[0], normalize=None)
-
-
 def test_normalize_kwarg_pie():
     fig, ax = plt.subplots()
     x = [0.3, 0.3, 0.1]
@@ -4670,6 +5688,37 @@ def test_set_get_ticklabels():
     ax[1].set_yticks(ax[0].get_yticks())
     ax[1].set_xticklabels(ax[0].get_xticklabels())
     ax[1].set_yticklabels(ax[0].get_yticklabels())
+
+
+@check_figures_equal(extensions=["png"])
+def test_set_ticks_with_labels(fig_test, fig_ref):
+    """
+    Test that these two are identical::
+
+        set_xticks(ticks); set_xticklabels(labels, **kwargs)
+        set_xticks(ticks, labels, **kwargs)
+
+    """
+    ax = fig_ref.subplots()
+    ax.set_xticks([1, 2, 4, 6])
+    ax.set_xticklabels(['a', 'b', 'c', 'd'], fontweight='bold')
+    ax.set_yticks([1, 3, 5])
+    ax.set_yticks([2, 4], minor=True)
+    ax.set_yticklabels(['A', 'B'], minor=True)
+
+    ax = fig_test.subplots()
+    ax.set_xticks([1, 2, 4, 6], ['a', 'b', 'c', 'd'], fontweight='bold')
+    ax.set_yticks([1, 3, 5])
+    ax.set_yticks([2, 4], ['A', 'B'], minor=True)
+
+
+def test_set_noniterable_ticklabels():
+    # Ensure a useful TypeError message is raised
+    # when given a non-iterable ticklabels argument
+    # Pull request #22710
+    with pytest.raises(TypeError, match='must be a sequence'):
+        fig, ax = plt.subplots(2)
+        ax[1].set_xticks([2, 9], 3.1)
 
 
 def test_subsampled_ticklabels():
@@ -4782,10 +5831,52 @@ def test_set_margin_updates_limits():
     assert ax.get_xlim() == (1, 2)
 
 
+@pytest.mark.parametrize('err, args, kwargs, match', (
+        (ValueError, (-1,), {}, r'margin must be greater than -0\.5'),
+        (ValueError, (1, -1), {}, r'margin must be greater than -0\.5'),
+        (ValueError, tuple(), {'x': -1}, r'margin must be greater than -0\.5'),
+        (ValueError, tuple(), {'y': -1}, r'margin must be greater than -0\.5'),
+        (TypeError, (1, ), {'x': 1, 'y': 1},
+         'Cannot pass both positional and keyword arguments for x and/or y'),
+        (TypeError, (1, ), {'x': 1},
+         'Cannot pass both positional and keyword arguments for x and/or y'),
+        (TypeError, (1, 1, 1), {}, 'Must pass a single positional argument'),
+))
+def test_margins_errors(err, args, kwargs, match):
+    with pytest.raises(err, match=match):
+        fig = plt.figure()
+        ax = fig.add_subplot()
+        ax.margins(*args, **kwargs)
+
+
 def test_length_one_hist():
     fig, ax = plt.subplots()
     ax.hist(1)
     ax.hist([1])
+
+
+def test_set_xy_bound():
+    fig = plt.figure()
+    ax = fig.add_subplot()
+    ax.set_xbound(2.0, 3.0)
+    assert ax.get_xbound() == (2.0, 3.0)
+    assert ax.get_xlim() == (2.0, 3.0)
+    ax.set_xbound(upper=4.0)
+    assert ax.get_xbound() == (2.0, 4.0)
+    assert ax.get_xlim() == (2.0, 4.0)
+    ax.set_xbound(lower=3.0)
+    assert ax.get_xbound() == (3.0, 4.0)
+    assert ax.get_xlim() == (3.0, 4.0)
+
+    ax.set_ybound(2.0, 3.0)
+    assert ax.get_ybound() == (2.0, 3.0)
+    assert ax.get_ylim() == (2.0, 3.0)
+    ax.set_ybound(upper=4.0)
+    assert ax.get_ybound() == (2.0, 4.0)
+    assert ax.get_ylim() == (2.0, 4.0)
+    ax.set_ybound(lower=3.0)
+    assert ax.get_ybound() == (3.0, 4.0)
+    assert ax.get_ylim() == (3.0, 4.0)
 
 
 def test_pathological_hexbin():
@@ -4863,7 +5954,7 @@ def test_rc_spines():
         'axes.spines.top': False,
         'axes.spines.bottom': False}
     with matplotlib.rc_context(rc_dict):
-        fig, ax = plt.subplots()
+        plt.subplots()  # create a figure and axes with the spine properties
 
 
 @image_comparison(['rc_grid.png'], savefig_kwarg={'dpi': 40})
@@ -5078,6 +6169,17 @@ def test_title_location_roundtrip():
         ax.set_title('fail', loc='foo')
 
 
+@pytest.mark.parametrize('sharex', [True, False])
+def test_title_location_shared(sharex):
+    fig, axs = plt.subplots(2, 1, sharex=sharex)
+    axs[0].set_title('A', pad=-40)
+    axs[1].set_title('B', pad=-40)
+    fig.draw_without_rendering()
+    x, y1 = axs[0].title.get_position()
+    x, y2 = axs[1].title.get_position()
+    assert y1 == y2 == 1.0
+
+
 @image_comparison(["loglog.png"], remove_text=True, tol=0.02)
 def test_loglog():
     fig, ax = plt.subplots()
@@ -5087,41 +6189,29 @@ def test_loglog():
     ax.tick_params(length=15, width=2, which='minor')
 
 
-@pytest.mark.parametrize("new_api", [False, True])
 @image_comparison(["test_loglog_nonpos.png"], remove_text=True, style='mpl20')
-def test_loglog_nonpos(new_api):
+def test_loglog_nonpos():
     fig, axs = plt.subplots(3, 3)
     x = np.arange(1, 11)
     y = x**3
     y[7] = -3.
     x[4] = -10
-    for (i, j), ax in np.ndenumerate(axs):
-        mcx = ['mask', 'clip', ''][j]
-        mcy = ['mask', 'clip', ''][i]
-        if new_api:
-            if mcx == mcy:
-                if mcx:
-                    ax.loglog(x, y**3, lw=2, nonpositive=mcx)
-                else:
-                    ax.loglog(x, y**3, lw=2)
+    for (mcy, mcx), ax in zip(product(['mask', 'clip', ''], repeat=2),
+                              axs.flat):
+        if mcx == mcy:
+            if mcx:
+                ax.loglog(x, y**3, lw=2, nonpositive=mcx)
             else:
                 ax.loglog(x, y**3, lw=2)
-                if mcx:
-                    ax.set_xscale("log", nonpositive=mcx)
-                if mcy:
-                    ax.set_yscale("log", nonpositive=mcy)
         else:
-            kws = {}
+            ax.loglog(x, y**3, lw=2)
             if mcx:
-                kws['nonposx'] = mcx
+                ax.set_xscale("log", nonpositive=mcx)
             if mcy:
-                kws['nonposy'] = mcy
-            with (pytest.warns(MatplotlibDeprecationWarning) if kws
-                  else nullcontext()):
-                ax.loglog(x, y**3, lw=2, **kws)
+                ax.set_yscale("log", nonpositive=mcy)
 
 
-@pytest.mark.style('default')
+@mpl.style.context('default')
 def test_axes_margins():
     fig, ax = plt.subplots()
     ax.plot([0, 1, 2, 3])
@@ -5210,12 +6300,12 @@ def test_shared_axes_autoscale():
     l = np.arange(-80, 90, 40)
     t = np.random.random_sample((l.size, l.size))
 
-    ax1 = plt.subplot(211)
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, sharey=True)
+
     ax1.set_xlim(-1000, 1000)
     ax1.set_ylim(-1000, 1000)
     ax1.contour(l, l, t)
 
-    ax2 = plt.subplot(212, sharex=ax1, sharey=ax1)
     ax2.contour(l, l, t)
     assert not ax1.get_autoscalex_on() and not ax2.get_autoscalex_on()
     assert not ax1.get_autoscaley_on() and not ax2.get_autoscaley_on()
@@ -5235,18 +6325,21 @@ def test_adjust_numtick_aspect():
     assert len(ax.yaxis.get_major_locator()()) > 2
 
 
-@image_comparison(["auto_numticks.png"], style='default')
+@mpl.style.context("default")
 def test_auto_numticks():
-    # Make tiny, empty subplots, verify that there are only 3 ticks.
-    fig, axs = plt.subplots(4, 4)
+    axs = plt.figure().subplots(4, 4)
+    for ax in axs.flat:  # Tiny, empty subplots have only 3 ticks.
+        assert [*ax.get_xticks()] == [*ax.get_yticks()] == [0, 0.5, 1]
 
 
-@image_comparison(["auto_numticks_log.png"], style='default')
+@mpl.style.context("default")
 def test_auto_numticks_log():
     # Verify that there are not too many ticks with a large log range.
     fig, ax = plt.subplots()
-    matplotlib.rcParams['axes.autolimit_mode'] = 'round_numbers'
+    mpl.rcParams['axes.autolimit_mode'] = 'round_numbers'
     ax.loglog([1e-20, 1e5], [1e-16, 10])
+    assert (np.log10(ax.get_xticks()) == np.arange(-26, 18, 4)).all()
+    assert (np.log10(ax.get_yticks()) == np.arange(-20, 10, 3)).all()
 
 
 def test_broken_barh_empty():
@@ -5317,6 +6410,24 @@ def test_pandas_bar_align_center(pd):
     fig.canvas.draw()
 
 
+def test_tick_apply_tickdir_deprecation():
+    # Remove this test when the deprecation expires.
+    import matplotlib.axis as maxis
+    ax = plt.axes()
+
+    tick = maxis.XTick(ax, 0)
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match="The apply_tickdir function was deprecated in "
+                            "Matplotlib 3.5"):
+        tick.apply_tickdir('out')
+
+    tick = maxis.YTick(ax, 0)
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match="The apply_tickdir function was deprecated in "
+                            "Matplotlib 3.5"):
+        tick.apply_tickdir('out')
+
+
 def test_axis_set_tick_params_labelsize_labelcolor():
     # Tests fix for issue 4346
     axis_1 = plt.subplot()
@@ -5376,15 +6487,6 @@ def test_none_kwargs():
     ax = plt.figure().subplots()
     ln, = ax.plot(range(32), linestyle=None)
     assert ln.get_linestyle() == '-'
-
-
-def test_ls_ds_conflict():
-    # Passing the drawstyle with the linestyle is deprecated since 3.1.
-    # We still need to test this until it's removed from the code.
-    # But we don't want to see the deprecation warning in the test.
-    with matplotlib.cbook._suppress_matplotlib_deprecation_warning(), \
-         pytest.raises(ValueError):
-        plt.plot(range(32), linestyle='steps-pre:', drawstyle='steps-post')
 
 
 def test_bar_uint8():
@@ -5461,9 +6563,9 @@ def test_axisbelow():
         ax.grid(color='c', linestyle='-', linewidth=3)
         ax.tick_params(top=False, bottom=False,
                        left=False, right=False)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+        ax.spines[:].set_visible(False)
         ax.set_axisbelow(setting)
+        assert ax.get_axisbelow() == setting
 
 
 def test_titletwiny():
@@ -5517,8 +6619,38 @@ def test_title_xticks_top_both():
     assert ax.title.get_position()[1] > 1.04
 
 
+@pytest.mark.parametrize(
+    'left, center', [
+        ('left', ''),
+        ('', 'center'),
+        ('left', 'center')
+    ], ids=[
+        'left title moved',
+        'center title kept',
+        'both titles aligned'
+    ]
+)
+def test_title_above_offset(left, center):
+    # Test that title moves if overlaps with yaxis offset text.
+    mpl.rcParams['axes.titley'] = None
+    fig, ax = plt.subplots()
+    ax.set_ylim(1e11)
+    ax.set_title(left, loc='left')
+    ax.set_title(center)
+    fig.draw_without_rendering()
+    if left and not center:
+        assert ax._left_title.get_position()[1] > 1.0
+    elif not left and center:
+        assert ax.title.get_position()[1] == 1.0
+    else:
+        yleft = ax._left_title.get_position()[1]
+        ycenter = ax.title.get_position()[1]
+        assert yleft > 1.0
+        assert ycenter == yleft
+
+
 def test_title_no_move_off_page():
-    # If an axes is off the figure (ie. if it is cropped during a save)
+    # If an Axes is off the figure (ie. if it is cropped during a save)
     # make sure that the automatic title repositioning does not get done.
     mpl.rcParams['axes.titley'] = None
     fig = plt.figure()
@@ -5532,16 +6664,14 @@ def test_title_no_move_off_page():
 
 def test_offset_label_color():
     # Tests issue 6440
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.plot([1.01e9, 1.02e9, 1.03e9])
     ax.yaxis.set_tick_params(labelcolor='red')
     assert ax.yaxis.get_offset_text().get_color() == 'red'
 
 
 def test_offset_text_visible():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.plot([1.01e9, 1.02e9, 1.03e9])
     ax.yaxis.set_tick_params(label1On=False, label2On=True)
     assert ax.yaxis.get_offset_text().get_visible()
@@ -5600,7 +6730,7 @@ def test_tick_param_label_rotation():
         assert text.get_rotation() == 35
 
 
-@pytest.mark.style('default')
+@mpl.style.context('default')
 def test_fillbetween_cycle():
     fig, ax = plt.subplots()
 
@@ -5686,7 +6816,7 @@ def test_invalid_axis_limits():
 @pytest.mark.parametrize('xscale', ['symlog', 'log'])
 @pytest.mark.parametrize('yscale', ['symlog', 'log'])
 def test_minorticks_on(xscale, yscale):
-    ax = plt.subplot(111)
+    ax = plt.subplot()
     ax.plot([1, 2, 3, 4])
     ax.set_xscale(xscale)
     ax.set_yscale(yscale)
@@ -5806,11 +6936,36 @@ def test_zoom_inset():
     fig.canvas.draw()
     xx = np.array([[1.5,  2.],
                    [2.15, 2.5]])
-    assert(np.all(rec.get_bbox().get_points() == xx))
+    assert np.all(rec.get_bbox().get_points() == xx)
     xx = np.array([[0.6325, 0.692308],
                    [0.8425, 0.907692]])
     np.testing.assert_allclose(
         axin1.get_position().get_points(), xx, rtol=1e-4)
+
+
+@image_comparison(['inset_polar.png'], remove_text=True, style='mpl20')
+def test_inset_polar():
+    _, ax = plt.subplots()
+    axins = ax.inset_axes([0.5, 0.1, 0.45, 0.45], polar=True)
+    assert isinstance(axins, PolarAxes)
+
+    r = np.arange(0, 2, 0.01)
+    theta = 2 * np.pi * r
+
+    ax.plot(theta, r)
+    axins.plot(theta, r)
+
+
+def test_inset_projection():
+    _, ax = plt.subplots()
+    axins = ax.inset_axes([0.2, 0.2, 0.3, 0.3], projection="hammer")
+    assert isinstance(axins, HammerAxes)
+
+
+def test_inset_subclass():
+    _, ax = plt.subplots()
+    axins = ax.inset_axes([0.2, 0.2, 0.3, 0.3], axes_class=AA.Axes)
+    assert isinstance(axins, AA.Axes)
 
 
 @pytest.mark.parametrize('x_inverted', [False, True])
@@ -5854,30 +7009,15 @@ def test_set_position():
 
 def test_spines_properbbox_after_zoom():
     fig, ax = plt.subplots()
-    bb = ax.spines['bottom'].get_window_extent(fig.canvas.get_renderer())
+    bb = ax.spines.bottom.get_window_extent(fig.canvas.get_renderer())
     # this is what zoom calls:
     ax._set_view_from_bbox((320, 320, 500, 500), 'in',
                            None, False, False)
-    bb2 = ax.spines['bottom'].get_window_extent(fig.canvas.get_renderer())
+    bb2 = ax.spines.bottom.get_window_extent(fig.canvas.get_renderer())
     np.testing.assert_allclose(bb.get_points(), bb2.get_points(), rtol=1e-6)
 
 
-def test_cartopy_backcompat():
-
-    class Dummy(matplotlib.axes.Axes):
-        ...
-
-    class DummySubplot(matplotlib.axes.SubplotBase, Dummy):
-        _axes_class = Dummy
-
-    matplotlib.axes._subplots._subplot_classes[Dummy] = DummySubplot
-
-    FactoryDummySubplot = matplotlib.axes.subplot_class_factory(Dummy)
-
-    assert DummySubplot is FactoryDummySubplot
-
-
-def test_gettightbbox_ignoreNaN():
+def test_gettightbbox_ignore_nan():
     fig, ax = plt.subplots()
     remove_ticks_and_titles(fig)
     ax.text(np.NaN, 1, 'Boo')
@@ -5952,6 +7092,7 @@ def test_secondary_fail():
 def test_secondary_resize():
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(np.arange(2, 11), np.arange(2, 11))
+
     def invert(x):
         with np.errstate(divide='ignore'):
             return 1 / x
@@ -5965,6 +7106,7 @@ def test_secondary_resize():
 def test_secondary_minorloc():
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(np.arange(2, 11), np.arange(2, 11))
+
     def invert(x):
         with np.errstate(divide='ignore'):
             return 1 / x
@@ -5995,7 +7137,13 @@ def test_secondary_formatter():
         secax.xaxis.get_major_formatter(), mticker.ScalarFormatter)
 
 
-def color_boxes(fig, axs):
+def test_secondary_repr():
+    fig, ax = plt.subplots()
+    secax = ax.secondary_xaxis("top")
+    assert repr(secax) == '<SecondaryAxis: >'
+
+
+def color_boxes(fig, ax):
     """
     Helper for the tests below that test the extents of various axes elements
     """
@@ -6003,10 +7151,10 @@ def color_boxes(fig, axs):
 
     renderer = fig.canvas.get_renderer()
     bbaxis = []
-    for nn, axx in enumerate([axs.xaxis, axs.yaxis]):
+    for nn, axx in enumerate([ax.xaxis, ax.yaxis]):
         bb = axx.get_tightbbox(renderer)
         if bb:
-            axisr = plt.Rectangle(
+            axisr = mpatches.Rectangle(
                 (bb.x0, bb.y0), width=bb.width, height=bb.height,
                 linewidth=0.7, edgecolor='y', facecolor="none", transform=None,
                 zorder=3)
@@ -6015,24 +7163,24 @@ def color_boxes(fig, axs):
 
     bbspines = []
     for nn, a in enumerate(['bottom', 'top', 'left', 'right']):
-        bb = axs.spines[a].get_window_extent(renderer)
-        spiner = plt.Rectangle(
+        bb = ax.spines[a].get_window_extent(renderer)
+        spiner = mpatches.Rectangle(
             (bb.x0, bb.y0), width=bb.width, height=bb.height,
             linewidth=0.7, edgecolor="green", facecolor="none", transform=None,
             zorder=3)
         fig.add_artist(spiner)
         bbspines += [bb]
 
-    bb = axs.get_window_extent()
-    rect2 = plt.Rectangle(
+    bb = ax.get_window_extent()
+    rect2 = mpatches.Rectangle(
         (bb.x0, bb.y0), width=bb.width, height=bb.height,
         linewidth=1.5, edgecolor="magenta", facecolor="none", transform=None,
         zorder=2)
     fig.add_artist(rect2)
     bbax = bb
 
-    bb2 = axs.get_tightbbox(renderer)
-    rect2 = plt.Rectangle(
+    bb2 = ax.get_tightbbox(renderer)
+    rect2 = mpatches.Rectangle(
         (bb2.x0, bb2.y0), width=bb2.width, height=bb2.height,
         linewidth=3, edgecolor="red", facecolor="none", transform=None,
         zorder=1)
@@ -6088,10 +7236,6 @@ def test_nodecorator():
         bbaxis, bbspines, bbax, bbtb = color_boxes(fig, ax)
 
     # test the axis bboxes
-    target = [
-        None,
-        None
-    ]
     for nn, b in enumerate(bbaxis):
         assert b is None
 
@@ -6118,18 +7262,19 @@ def test_displaced_spine():
     with rc_context({'_internal.classic_mode': False}):
         fig, ax = plt.subplots(dpi=200, figsize=(6, 6))
         ax.set(xticklabels=[], yticklabels=[])
-        ax.spines['bottom'].set_position(('axes', -0.1))
+        ax.spines.bottom.set_position(('axes', -0.1))
         fig.canvas.draw()
         bbaxis, bbspines, bbax, bbtb = color_boxes(fig, ax)
 
-    target = [
+    targets = [
         [150., 24., 930., 11.111111],
         [150.0, 1080.0, 930.0, 0.0],
         [150.0, 119.9999, 11.111, 960.0],
         [1068.8888, 119.9999, 11.111, 960.0]
     ]
-    for nn, b in enumerate(bbspines):
-        targetbb = mtransforms.Bbox.from_bounds(*target[nn])
+    for target, bbspine in zip(targets, bbspines):
+        targetbb = mtransforms.Bbox.from_bounds(*target)
+        assert_allclose(bbspine.bounds, targetbb.bounds, atol=1e-2)
 
     target = [150.0, 119.99999999999997, 930.0, 960.0]
     targetbb = mtransforms.Bbox.from_bounds(*target)
@@ -6221,17 +7366,21 @@ def test_axis_extent_arg():
     assert (ymin, ymax) == ax.get_ylim()
 
 
-def test_datetime_masked():
-    # make sure that all-masked data falls back to the viewlim
-    # set in convert.axisinfo....
-    x = np.array([datetime.datetime(2017, 1, n) for n in range(1, 6)])
-    y = np.array([1, 2, 3, 4, 5])
-    m = np.ma.masked_greater(y, 0)
-
+def test_axis_extent_arg2():
+    # Same as test_axis_extent_arg, but with keyword arguments
     fig, ax = plt.subplots()
-    ax.plot(x, m)
-    dt = mdates.date2num(np.datetime64('0000-12-31'))
-    assert ax.get_xlim() == (730120.0 + dt, 733773.0 + dt)
+    xmin = 5
+    xmax = 10
+    ymin = 15
+    ymax = 20
+    extent = ax.axis(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax)
+
+    # test that the docstring is correct
+    assert tuple(extent) == (xmin, xmax, ymin, ymax)
+
+    # test that limits were set per the docstring
+    assert (xmin, xmax) == ax.get_xlim()
+    assert (ymin, ymax) == ax.get_ylim()
 
 
 def test_hist_auto_bins():
@@ -6281,6 +7430,8 @@ def test_set_ticks_inverted():
     ax.invert_xaxis()
     ax.set_xticks([.3, .7])
     assert ax.get_xlim() == (1, 0)
+    ax.set_xticks([-1])
+    assert ax.get_xlim() == (1, -1)
 
 
 def test_aspect_nonlinear_adjustable_box():
@@ -6320,6 +7471,7 @@ def test_box_aspect():
     axtwin.plot([12, 344])
 
     ax1.set_box_aspect(1)
+    assert ax1.get_box_aspect() == 1.0
 
     fig2, ax2 = plt.subplots()
     ax2.margins(0)
@@ -6382,7 +7534,7 @@ def test_redraw_in_frame():
     ax.redraw_in_frame()
 
 
-def test_invisible_axes():
+def test_invisible_axes_events():
     # invisible axes should not respond to events...
     fig, ax = plt.subplots()
     assert fig.canvas.inaxes((200, 200)) is not None
@@ -6406,34 +7558,24 @@ def test_ytickcolor_is_not_markercolor():
         assert tick.tick1line.get_markeredgecolor() != 'white'
 
 
+@pytest.mark.parametrize('axis', ('x', 'y'))
 @pytest.mark.parametrize('auto', (True, False, None))
-def test_unautoscaley(auto):
-    fig, ax = plt.subplots()
-    x = np.arange(100)
-    y = np.linspace(-.1, .1, 100)
-    ax.scatter(x, y)
-
-    post_auto = ax.get_autoscaley_on() if auto is None else auto
-
-    ax.set_ylim((-.5, .5), auto=auto)
-    assert post_auto == ax.get_autoscaley_on()
-    fig.canvas.draw()
-    assert_array_equal(ax.get_ylim(), (-.5, .5))
-
-
-@pytest.mark.parametrize('auto', (True, False, None))
-def test_unautoscalex(auto):
+def test_unautoscale(axis, auto):
     fig, ax = plt.subplots()
     x = np.arange(100)
     y = np.linspace(-.1, .1, 100)
     ax.scatter(y, x)
 
-    post_auto = ax.get_autoscalex_on() if auto is None else auto
+    get_autoscale_on = getattr(ax, f'get_autoscale{axis}_on')
+    set_lim = getattr(ax, f'set_{axis}lim')
+    get_lim = getattr(ax, f'get_{axis}lim')
 
-    ax.set_xlim((-.5, .5), auto=auto)
-    assert post_auto == ax.get_autoscalex_on()
+    post_auto = get_autoscale_on() if auto is None else auto
+
+    set_lim((-0.5, 0.5), auto=auto)
+    assert post_auto == get_autoscale_on()
     fig.canvas.draw()
-    assert_array_equal(ax.get_xlim(), (-.5, .5))
+    assert_array_equal(get_lim(), (-0.5, 0.5))
 
 
 @check_figures_equal(extensions=["png"])
@@ -6444,7 +7586,7 @@ def test_polar_interpolation_steps_variable_r(fig_test, fig_ref):
         np.linspace(0, np.pi/2, 101), np.linspace(1, 2, 101))
 
 
-@pytest.mark.style('default')
+@mpl.style.context('default')
 def test_autoscale_tiny_sticky():
     fig, ax = plt.subplots()
     ax.bar(0, 1e-9)
@@ -6452,9 +7594,29 @@ def test_autoscale_tiny_sticky():
     assert ax.get_ylim() == (0, 1.05e-9)
 
 
+def test_xtickcolor_is_not_xticklabelcolor():
+    plt.rcParams['xtick.color'] = 'yellow'
+    plt.rcParams['xtick.labelcolor'] = 'blue'
+    ax = plt.axes()
+    ticks = ax.xaxis.get_major_ticks()
+    for tick in ticks:
+        assert tick.tick1line.get_color() == 'yellow'
+        assert tick.label1.get_color() == 'blue'
+
+
+def test_ytickcolor_is_not_yticklabelcolor():
+    plt.rcParams['ytick.color'] = 'yellow'
+    plt.rcParams['ytick.labelcolor'] = 'blue'
+    ax = plt.axes()
+    ticks = ax.yaxis.get_major_ticks()
+    for tick in ticks:
+        assert tick.tick1line.get_color() == 'yellow'
+        assert tick.label1.get_color() == 'blue'
+
+
 @pytest.mark.parametrize('size', [size for size in mfont_manager.font_scalings
                                   if size is not None] + [8, 10, 12])
-@pytest.mark.style('default')
+@mpl.style.context('default')
 def test_relative_ticklabel_sizes(size):
     mpl.rcParams['xtick.labelsize'] = size
     mpl.rcParams['ytick.labelsize'] = size
@@ -6464,3 +7626,486 @@ def test_relative_ticklabel_sizes(size):
     for name, axis in zip(['x', 'y'], [ax.xaxis, ax.yaxis]):
         for tick in axis.get_major_ticks():
             assert tick.label1.get_size() == axis._get_tick_label_size(name)
+
+
+def test_multiplot_autoscale():
+    fig = plt.figure()
+    ax1, ax2 = fig.subplots(2, 1, sharex='all')
+    ax1.scatter([1, 2, 3, 4], [2, 3, 2, 3])
+    ax2.axhspan(-5, 5)
+    xlim = ax1.get_xlim()
+    assert np.allclose(xlim, [0.5, 4.5])
+
+
+def test_sharing_does_not_link_positions():
+    fig = plt.figure()
+    ax0 = fig.add_subplot(221)
+    ax1 = fig.add_axes([.6, .6, .3, .3], sharex=ax0)
+    init_pos = ax1.get_position()
+    fig.subplots_adjust(left=0)
+    assert (ax1.get_position().get_points() == init_pos.get_points()).all()
+
+
+@check_figures_equal(extensions=["pdf"])
+def test_2dcolor_plot(fig_test, fig_ref):
+    color = np.array([0.1, 0.2, 0.3])
+    # plot with 1D-color:
+    axs = fig_test.subplots(5)
+    axs[0].plot([1, 2], [1, 2], c=color.reshape(-1))
+    axs[1].scatter([1, 2], [1, 2], c=color.reshape(-1))
+    axs[2].step([1, 2], [1, 2], c=color.reshape(-1))
+    axs[3].hist(np.arange(10), color=color.reshape(-1))
+    axs[4].bar(np.arange(10), np.arange(10), color=color.reshape(-1))
+    # plot with 2D-color:
+    axs = fig_ref.subplots(5)
+    axs[0].plot([1, 2], [1, 2], c=color.reshape((1, -1)))
+    axs[1].scatter([1, 2], [1, 2], c=color.reshape((1, -1)))
+    axs[2].step([1, 2], [1, 2], c=color.reshape((1, -1)))
+    axs[3].hist(np.arange(10), color=color.reshape((1, -1)))
+    axs[4].bar(np.arange(10), np.arange(10), color=color.reshape((1, -1)))
+
+
+@check_figures_equal(extensions=['png'])
+def test_shared_axes_clear(fig_test, fig_ref):
+    x = np.arange(0.0, 2*np.pi, 0.01)
+    y = np.sin(x)
+
+    axs = fig_ref.subplots(2, 2, sharex=True, sharey=True)
+    for ax in axs.flat:
+        ax.plot(x, y)
+
+    axs = fig_test.subplots(2, 2, sharex=True, sharey=True)
+    for ax in axs.flat:
+        ax.clear()
+        ax.plot(x, y)
+
+
+def test_shared_axes_retick():
+    fig, axs = plt.subplots(2, 2, sharex='all', sharey='all')
+
+    for ax in axs.flat:
+        ax.plot([0, 2], 'o-')
+
+    axs[0, 0].set_xticks([-0.5, 0, 1, 1.5])  # should affect all axes xlims
+    for ax in axs.flat:
+        assert ax.get_xlim() == axs[0, 0].get_xlim()
+
+    axs[0, 0].set_yticks([-0.5, 0, 2, 2.5])  # should affect all axes ylims
+    for ax in axs.flat:
+        assert ax.get_ylim() == axs[0, 0].get_ylim()
+
+
+@pytest.mark.parametrize('ha', ['left', 'center', 'right'])
+def test_ylabel_ha_with_position(ha):
+    fig = Figure()
+    ax = fig.subplots()
+    ax.set_ylabel("test", y=1, ha=ha)
+    ax.yaxis.set_label_position("right")
+    assert ax.yaxis.get_label().get_ha() == ha
+
+
+def test_bar_label_location_vertical():
+    ax = plt.gca()
+    xs, heights = [1, 2], [3, -4]
+    rects = ax.bar(xs, heights)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (xs[0], heights[0])
+    assert labels[0].get_ha() == 'center'
+    assert labels[0].get_va() == 'bottom'
+    assert labels[1].xy == (xs[1], heights[1])
+    assert labels[1].get_ha() == 'center'
+    assert labels[1].get_va() == 'top'
+
+
+def test_bar_label_location_vertical_yinverted():
+    ax = plt.gca()
+    ax.invert_yaxis()
+    xs, heights = [1, 2], [3, -4]
+    rects = ax.bar(xs, heights)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (xs[0], heights[0])
+    assert labels[0].get_ha() == 'center'
+    assert labels[0].get_va() == 'top'
+    assert labels[1].xy == (xs[1], heights[1])
+    assert labels[1].get_ha() == 'center'
+    assert labels[1].get_va() == 'bottom'
+
+
+def test_bar_label_location_horizontal():
+    ax = plt.gca()
+    ys, widths = [1, 2], [3, -4]
+    rects = ax.barh(ys, widths)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (widths[0], ys[0])
+    assert labels[0].get_ha() == 'left'
+    assert labels[0].get_va() == 'center'
+    assert labels[1].xy == (widths[1], ys[1])
+    assert labels[1].get_ha() == 'right'
+    assert labels[1].get_va() == 'center'
+
+
+def test_bar_label_location_horizontal_yinverted():
+    ax = plt.gca()
+    ax.invert_yaxis()
+    ys, widths = [1, 2], [3, -4]
+    rects = ax.barh(ys, widths)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (widths[0], ys[0])
+    assert labels[0].get_ha() == 'left'
+    assert labels[0].get_va() == 'center'
+    assert labels[1].xy == (widths[1], ys[1])
+    assert labels[1].get_ha() == 'right'
+    assert labels[1].get_va() == 'center'
+
+
+def test_bar_label_location_horizontal_xinverted():
+    ax = plt.gca()
+    ax.invert_xaxis()
+    ys, widths = [1, 2], [3, -4]
+    rects = ax.barh(ys, widths)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (widths[0], ys[0])
+    assert labels[0].get_ha() == 'right'
+    assert labels[0].get_va() == 'center'
+    assert labels[1].xy == (widths[1], ys[1])
+    assert labels[1].get_ha() == 'left'
+    assert labels[1].get_va() == 'center'
+
+
+def test_bar_label_location_horizontal_xyinverted():
+    ax = plt.gca()
+    ax.invert_xaxis()
+    ax.invert_yaxis()
+    ys, widths = [1, 2], [3, -4]
+    rects = ax.barh(ys, widths)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (widths[0], ys[0])
+    assert labels[0].get_ha() == 'right'
+    assert labels[0].get_va() == 'center'
+    assert labels[1].xy == (widths[1], ys[1])
+    assert labels[1].get_ha() == 'left'
+    assert labels[1].get_va() == 'center'
+
+
+def test_bar_label_location_center():
+    ax = plt.gca()
+    ys, widths = [1, 2], [3, -4]
+    rects = ax.barh(ys, widths)
+    labels = ax.bar_label(rects, label_type='center')
+    assert labels[0].xy == (widths[0] / 2, ys[0])
+    assert labels[0].get_ha() == 'center'
+    assert labels[0].get_va() == 'center'
+    assert labels[1].xy == (widths[1] / 2, ys[1])
+    assert labels[1].get_ha() == 'center'
+    assert labels[1].get_va() == 'center'
+
+
+def test_bar_label_location_errorbars():
+    ax = plt.gca()
+    xs, heights = [1, 2], [3, -4]
+    rects = ax.bar(xs, heights, yerr=1)
+    labels = ax.bar_label(rects)
+    assert labels[0].xy == (xs[0], heights[0] + 1)
+    assert labels[0].get_ha() == 'center'
+    assert labels[0].get_va() == 'bottom'
+    assert labels[1].xy == (xs[1], heights[1] - 1)
+    assert labels[1].get_ha() == 'center'
+    assert labels[1].get_va() == 'top'
+
+
+def test_bar_label_fmt():
+    ax = plt.gca()
+    rects = ax.bar([1, 2], [3, -4])
+    labels = ax.bar_label(rects, fmt='%.2f')
+    assert labels[0].get_text() == '3.00'
+    assert labels[1].get_text() == '-4.00'
+
+
+def test_bar_label_labels():
+    ax = plt.gca()
+    rects = ax.bar([1, 2], [3, -4])
+    labels = ax.bar_label(rects, labels=['A', 'B'])
+    assert labels[0].get_text() == 'A'
+    assert labels[1].get_text() == 'B'
+
+
+def test_bar_label_nan_ydata():
+    ax = plt.gca()
+    bars = ax.bar([2, 3], [np.nan, 1])
+    labels = ax.bar_label(bars)
+    assert [l.get_text() for l in labels] == ['', '1']
+    assert labels[0].xy == (2, 0)
+    assert labels[0].get_va() == 'bottom'
+
+
+def test_bar_label_nan_ydata_inverted():
+    ax = plt.gca()
+    ax.yaxis_inverted()
+    bars = ax.bar([2, 3], [np.nan, 1])
+    labels = ax.bar_label(bars)
+    assert [l.get_text() for l in labels] == ['', '1']
+    assert labels[0].xy == (2, 0)
+    assert labels[0].get_va() == 'bottom'
+
+
+def test_nan_barlabels():
+    fig, ax = plt.subplots()
+    bars = ax.bar([1, 2, 3], [np.nan, 1, 2], yerr=[0.2, 0.4, 0.6])
+    labels = ax.bar_label(bars)
+    assert [l.get_text() for l in labels] == ['', '1', '2']
+    assert np.allclose(ax.get_ylim(), (0.0, 3.0))
+
+    fig, ax = plt.subplots()
+    bars = ax.bar([1, 2, 3], [0, 1, 2], yerr=[0.2, np.nan, 0.6])
+    labels = ax.bar_label(bars)
+    assert [l.get_text() for l in labels] == ['0', '1', '2']
+    assert np.allclose(ax.get_ylim(), (-0.5, 3.0))
+
+    fig, ax = plt.subplots()
+    bars = ax.bar([1, 2, 3], [np.nan, 1, 2], yerr=[np.nan, np.nan, 0.6])
+    labels = ax.bar_label(bars)
+    assert [l.get_text() for l in labels] == ['', '1', '2']
+    assert np.allclose(ax.get_ylim(), (0.0, 3.0))
+
+
+def test_patch_bounds():  # PR 19078
+    fig, ax = plt.subplots()
+    ax.add_patch(mpatches.Wedge((0, -1), 1.05, 60, 120, width=0.1))
+    bot = 1.9*np.sin(15*np.pi/180)**2
+    np.testing.assert_array_almost_equal_nulp(
+        np.array((-0.525, -(bot+0.05), 1.05, bot+0.1)), ax.dataLim.bounds, 16)
+
+
+@mpl.style.context('default')
+def test_warn_ignored_scatter_kwargs():
+    with pytest.warns(UserWarning,
+                      match=r"You passed a edgecolor/edgecolors"):
+        plt.scatter([0], [0], marker="+", s=500, facecolor="r", edgecolor="b")
+
+
+def test_artist_sublists():
+    fig, ax = plt.subplots()
+    lines = [ax.plot(np.arange(i, i + 5))[0] for i in range(6)]
+    col = ax.scatter(np.arange(5), np.arange(5))
+    im = ax.imshow(np.zeros((5, 5)))
+    patch = ax.add_patch(mpatches.Rectangle((0, 0), 5, 5))
+    text = ax.text(0, 0, 'foo')
+
+    # Get items, which should not be mixed.
+    assert list(ax.collections) == [col]
+    assert list(ax.images) == [im]
+    assert list(ax.lines) == lines
+    assert list(ax.patches) == [patch]
+    assert not ax.tables
+    assert list(ax.texts) == [text]
+
+    # Get items should work like lists/tuple.
+    assert ax.lines[0] is lines[0]
+    assert ax.lines[-1] is lines[-1]
+    with pytest.raises(IndexError, match='out of range'):
+        ax.lines[len(lines) + 1]
+
+    # Deleting items (multiple or single) should warn.
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        del ax.lines[-1]
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        del ax.lines[-1:]
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        del ax.lines[1:]
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        del ax.lines[0]
+
+    # Lists should be empty after removing items.
+    col.remove()
+    assert not ax.collections
+    im.remove()
+    assert not ax.images
+    patch.remove()
+    assert not ax.patches
+    text.remove()
+    assert not ax.texts
+
+    # Everything else should remain empty.
+    assert not ax.lines
+    assert not ax.tables
+
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.texts property'):
+        ax.texts.append(text)
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.collections property'):
+        ax.collections.append(col)
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.images property'):
+        ax.images.append(im)
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.patches property'):
+        ax.patches.append(patch)
+    # verify things are back
+    assert list(ax.collections) == [col]
+    assert list(ax.images) == [im]
+    assert list(ax.patches) == [patch]
+    assert list(ax.texts) == [text]
+
+    # Adding items should warn.
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        ax.lines.append(lines[-2])
+    assert list(ax.lines) == [lines[-2]]
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        ax.lines.append(lines[-1])
+    assert list(ax.lines) == lines[-2:]
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        ax.lines.insert(-2, lines[0])
+    assert list(ax.lines) == [lines[0], lines[-2], lines[-1]]
+
+    # Modifying items should warn.
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        ax.lines[0] = lines[0]
+    assert list(ax.lines) == [lines[0], lines[-2], lines[-1]]
+    with pytest.warns(MatplotlibDeprecationWarning,
+                      match='modification of the Axes.lines property'):
+        ax.lines[1:1] = lines[1:-2]
+    assert list(ax.lines) == lines
+
+    # Adding to other lists should produce a regular list.
+    assert ax.lines + [1, 2, 3] == [*lines, 1, 2, 3]
+    assert [1, 2, 3] + ax.lines == [1, 2, 3, *lines]
+
+    for ln in ax.lines:
+        ln.remove()
+    assert len(ax.lines) == 0
+
+
+def test_empty_line_plots():
+    # Incompatible nr columns, plot "nothing"
+    x = np.ones(10)
+    y = np.ones((10, 0))
+    _, ax = plt.subplots()
+    line = ax.plot(x, y)
+    assert len(line) == 0
+
+    # Ensure plot([],[]) creates line
+    _, ax = plt.subplots()
+    line = ax.plot([], [])
+    assert len(line) == 1
+
+
+@pytest.mark.parametrize('fmt, match', (
+    ("f", r"'f' is not a valid format string \(unrecognized character 'f'\)"),
+    ("o+", r"'o\+' is not a valid format string \(two marker symbols\)"),
+    (":-", r"':-' is not a valid format string \(two linestyle symbols\)"),
+    ("rk", r"'rk' is not a valid format string \(two color symbols\)"),
+    (":o-r", r"':o-r' is not a valid format string \(two linestyle symbols\)"),
+))
+@pytest.mark.parametrize("data", [None, {"string": range(3)}])
+def test_plot_format_errors(fmt, match, data):
+    fig, ax = plt.subplots()
+    if data is not None:
+        match = match.replace("not", "neither a data key nor")
+    with pytest.raises(ValueError, match=r"\A" + match + r"\Z"):
+        ax.plot("string", fmt, data=data)
+
+
+def test_plot_format():
+    fig, ax = plt.subplots()
+    line = ax.plot([1, 2, 3], '1.0')
+    assert line[0].get_color() == (1.0, 1.0, 1.0, 1.0)
+    assert line[0].get_marker() == 'None'
+    fig, ax = plt.subplots()
+    line = ax.plot([1, 2, 3], '1')
+    assert line[0].get_marker() == '1'
+    fig, ax = plt.subplots()
+    line = ax.plot([1, 2], [1, 2], '1.0', "1")
+    fig.canvas.draw()
+    assert line[0].get_color() == (1.0, 1.0, 1.0, 1.0)
+    assert ax.get_yticklabels()[0].get_text() == '1'
+    fig, ax = plt.subplots()
+    line = ax.plot([1, 2], [1, 2], '1', "1.0")
+    fig.canvas.draw()
+    assert line[0].get_marker() == '1'
+    assert ax.get_yticklabels()[0].get_text() == '1.0'
+    fig, ax = plt.subplots()
+    line = ax.plot([1, 2, 3], 'k3')
+    assert line[0].get_marker() == '3'
+    assert line[0].get_color() == 'k'
+
+
+def test_automatic_legend():
+    fig, ax = plt.subplots()
+    ax.plot("a", "b", data={"d": 2})
+    leg = ax.legend()
+    fig.canvas.draw()
+    assert leg.get_texts()[0].get_text() == 'a'
+    assert ax.get_yticklabels()[0].get_text() == 'a'
+
+    fig, ax = plt.subplots()
+    ax.plot("a", "b", "c", data={"d": 2})
+    leg = ax.legend()
+    fig.canvas.draw()
+    assert leg.get_texts()[0].get_text() == 'b'
+    assert ax.get_xticklabels()[0].get_text() == 'a'
+    assert ax.get_yticklabels()[0].get_text() == 'b'
+
+
+def test_plot_errors():
+    with pytest.raises(TypeError, match="plot got an unexpected keyword"):
+        plt.plot([1, 2, 3], x=1)
+    with pytest.raises(ValueError, match=r"plot\(\) with multiple groups"):
+        plt.plot([1, 2, 3], [1, 2, 3], [2, 3, 4], [2, 3, 4], label=['1', '2'])
+    with pytest.raises(ValueError, match="x and y must have same first"):
+        plt.plot([1, 2, 3], [1])
+    with pytest.raises(ValueError, match="x and y can be no greater than"):
+        plt.plot(np.ones((2, 2, 2)))
+    with pytest.raises(ValueError, match="Using arbitrary long args with"):
+        plt.plot("a", "b", "c", "d", data={"a": 2})
+
+
+def test_clim():
+    ax = plt.figure().add_subplot()
+    for plot_method in [
+            partial(ax.scatter, range(3), range(3), c=range(3)),
+            partial(ax.imshow, [[0, 1], [2, 3]]),
+            partial(ax.pcolor,  [[0, 1], [2, 3]]),
+            partial(ax.pcolormesh, [[0, 1], [2, 3]]),
+            partial(ax.pcolorfast, [[0, 1], [2, 3]]),
+    ]:
+        clim = (7, 8)
+        norm = plot_method(clim=clim).norm
+        assert (norm.vmin, norm.vmax) == clim
+
+
+def test_bezier_autoscale():
+    # Check that bezier curves autoscale to their curves, and not their
+    # control points
+    verts = [[-1, 0],
+             [0, -1],
+             [1, 0],
+             [1, 0]]
+    codes = [mpath.Path.MOVETO,
+             mpath.Path.CURVE3,
+             mpath.Path.CURVE3,
+             mpath.Path.CLOSEPOLY]
+    p = mpath.Path(verts, codes)
+
+    fig, ax = plt.subplots()
+    ax.add_patch(mpatches.PathPatch(p))
+    ax.autoscale()
+    # Bottom ylim should be at the edge of the curve (-0.5), and not include
+    # the control point (at -1)
+    assert ax.get_ylim()[0] == -0.5
+
+
+def test_get_xticklabel():
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(10))
+    for ind in range(10):
+        assert ax.get_xticklabels()[ind].get_text() == f'{ind}'
+        assert ax.get_yticklabels()[ind].get_text() == f'{ind}'

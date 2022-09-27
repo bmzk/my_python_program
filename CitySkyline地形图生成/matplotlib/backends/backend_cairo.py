@@ -1,11 +1,12 @@
 """
-A Cairo backend for matplotlib
+A Cairo backend for Matplotlib
 ==============================
 :Author: Steve Chaplin and others
 
 This backend depends on cairocffi or pycairo.
 """
 
+import functools
 import gzip
 import math
 
@@ -13,44 +14,27 @@ import numpy as np
 
 try:
     import cairo
-    if cairo.version_info < (1, 11, 0):
-        # Introduced create_for_data for Py3.
+    if cairo.version_info < (1, 14, 0):  # Introduced set_device_scale.
         raise ImportError
 except ImportError:
     try:
         import cairocffi as cairo
     except ImportError as err:
         raise ImportError(
-            "cairo backend requires that pycairo>=1.11.0 or cairocffi"
+            "cairo backend requires that pycairo>=1.14.0 or cairocffi "
             "is installed") from err
 
-from .. import cbook, font_manager
+import matplotlib as mpl
+from .. import _api, cbook, font_manager
 from matplotlib.backend_bases import (
-    _Backend, _check_savefig_extra_args, FigureCanvasBase, FigureManagerBase,
-    GraphicsContextBase, RendererBase)
+    _Backend, FigureCanvasBase, FigureManagerBase, GraphicsContextBase,
+    RendererBase)
 from matplotlib.font_manager import ttfFontProperty
-from matplotlib.mathtext import MathTextParser
 from matplotlib.path import Path
 from matplotlib.transforms import Affine2D
 
 
 backend_version = cairo.version
-
-
-if cairo.__name__ == "cairocffi":
-    # Convert a pycairo context to a cairocffi one.
-    def _to_context(ctx):
-        if not isinstance(ctx, cairo.Context):
-            ctx = cairo.Context._from_pointer(
-                cairo.ffi.cast(
-                    'cairo_t **',
-                    id(ctx) + object.__basicsize__)[0],
-                incref=True)
-        return ctx
-else:
-    # Pass-through a pycairo context.
-    def _to_context(ctx):
-        return ctx
 
 
 def _append_path(ctx, path, transform, clip=None):
@@ -91,56 +75,68 @@ def _cairo_font_args_from_font_prop(prop):
     return name, slant, weight
 
 
+# Mappings used for deprecated properties in RendererCairo, see below.
+_f_weights = {
+    100:          cairo.FONT_WEIGHT_NORMAL,
+    200:          cairo.FONT_WEIGHT_NORMAL,
+    300:          cairo.FONT_WEIGHT_NORMAL,
+    400:          cairo.FONT_WEIGHT_NORMAL,
+    500:          cairo.FONT_WEIGHT_NORMAL,
+    600:          cairo.FONT_WEIGHT_BOLD,
+    700:          cairo.FONT_WEIGHT_BOLD,
+    800:          cairo.FONT_WEIGHT_BOLD,
+    900:          cairo.FONT_WEIGHT_BOLD,
+    'ultralight': cairo.FONT_WEIGHT_NORMAL,
+    'light':      cairo.FONT_WEIGHT_NORMAL,
+    'normal':     cairo.FONT_WEIGHT_NORMAL,
+    'medium':     cairo.FONT_WEIGHT_NORMAL,
+    'regular':    cairo.FONT_WEIGHT_NORMAL,
+    'semibold':   cairo.FONT_WEIGHT_BOLD,
+    'bold':       cairo.FONT_WEIGHT_BOLD,
+    'heavy':      cairo.FONT_WEIGHT_BOLD,
+    'ultrabold':  cairo.FONT_WEIGHT_BOLD,
+    'black':      cairo.FONT_WEIGHT_BOLD,
+}
+_f_angles = {
+    'italic':  cairo.FONT_SLANT_ITALIC,
+    'normal':  cairo.FONT_SLANT_NORMAL,
+    'oblique': cairo.FONT_SLANT_OBLIQUE,
+}
+
+
 class RendererCairo(RendererBase):
-    @cbook.deprecated("3.3")
-    @property
-    def fontweights(self):
-        return {
-            100:          cairo.FONT_WEIGHT_NORMAL,
-            200:          cairo.FONT_WEIGHT_NORMAL,
-            300:          cairo.FONT_WEIGHT_NORMAL,
-            400:          cairo.FONT_WEIGHT_NORMAL,
-            500:          cairo.FONT_WEIGHT_NORMAL,
-            600:          cairo.FONT_WEIGHT_BOLD,
-            700:          cairo.FONT_WEIGHT_BOLD,
-            800:          cairo.FONT_WEIGHT_BOLD,
-            900:          cairo.FONT_WEIGHT_BOLD,
-            'ultralight': cairo.FONT_WEIGHT_NORMAL,
-            'light':      cairo.FONT_WEIGHT_NORMAL,
-            'normal':     cairo.FONT_WEIGHT_NORMAL,
-            'medium':     cairo.FONT_WEIGHT_NORMAL,
-            'regular':    cairo.FONT_WEIGHT_NORMAL,
-            'semibold':   cairo.FONT_WEIGHT_BOLD,
-            'bold':       cairo.FONT_WEIGHT_BOLD,
-            'heavy':      cairo.FONT_WEIGHT_BOLD,
-            'ultrabold':  cairo.FONT_WEIGHT_BOLD,
-            'black':      cairo.FONT_WEIGHT_BOLD,
-        }
-
-    @cbook.deprecated("3.3")
-    @property
-    def fontangles(self):
-        return {
-            'italic':  cairo.FONT_SLANT_ITALIC,
-            'normal':  cairo.FONT_SLANT_NORMAL,
-            'oblique': cairo.FONT_SLANT_OBLIQUE,
-        }
-
     def __init__(self, dpi):
         self.dpi = dpi
         self.gc = GraphicsContextCairo(renderer=self)
+        self.width = None
+        self.height = None
         self.text_ctx = cairo.Context(
            cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
-        self.mathtext_parser = MathTextParser('Cairo')
-        RendererBase.__init__(self)
+        super().__init__()
 
+    def set_context(self, ctx):
+        surface = ctx.get_target()
+        if hasattr(surface, "get_width") and hasattr(surface, "get_height"):
+            size = surface.get_width(), surface.get_height()
+        elif hasattr(surface, "get_extents"):  # GTK4 RecordingSurface.
+            ext = surface.get_extents()
+            size = ext.width, ext.height
+        else:  # vector surfaces.
+            ctx.save()
+            ctx.reset_clip()
+            rect, *rest = ctx.copy_clip_rectangle_list()
+            if rest:
+                raise TypeError("Cannot infer surface size")
+            size = rect.width, rect.height
+            ctx.restore()
+        self.gc.ctx = ctx
+        self.width, self.height = size
+
+    @_api.deprecated("3.6", alternative="set_context")
     def set_ctx_from_surface(self, surface):
         self.gc.ctx = cairo.Context(surface)
-        # Although it may appear natural to automatically call
-        # `self.set_width_height(surface.get_width(), surface.get_height())`
-        # here (instead of having the caller do so separately), this would fail
-        # for PDF/PS/SVG surfaces, which have no way to report their extents.
 
+    @_api.deprecated("3.6")
     def set_width_height(self, width, height):
         self.width = width
         self.height = height
@@ -244,9 +240,14 @@ class RendererCairo(RendererBase):
             ctx.new_path()
             ctx.move_to(x, y)
 
-            ctx.select_font_face(*_cairo_font_args_from_font_prop(prop))
             ctx.save()
-            ctx.set_font_size(prop.get_size_in_points() * self.dpi / 72)
+            ctx.select_font_face(*_cairo_font_args_from_font_prop(prop))
+            ctx.set_font_size(self.points_to_pixels(prop.get_size_in_points()))
+            opts = cairo.FontOptions()
+            opts.set_antialias(
+                cairo.ANTIALIAS_DEFAULT if mpl.rcParams["text.antialiased"]
+                else cairo.ANTIALIAS_NONE)
+            ctx.set_font_options(opts)
             if angle:
                 ctx.rotate(np.deg2rad(-angle))
             ctx.show_text(s)
@@ -254,26 +255,25 @@ class RendererCairo(RendererBase):
 
     def _draw_mathtext(self, gc, x, y, s, prop, angle):
         ctx = gc.ctx
-        width, height, descent, glyphs, rects = self.mathtext_parser.parse(
-            s, self.dpi, prop)
+        width, height, descent, glyphs, rects = \
+            self._text2path.mathtext_parser.parse(s, self.dpi, prop)
 
         ctx.save()
         ctx.translate(x, y)
         if angle:
             ctx.rotate(np.deg2rad(-angle))
 
-        for font, fontsize, s, ox, oy in glyphs:
+        for font, fontsize, idx, ox, oy in glyphs:
             ctx.new_path()
-            ctx.move_to(ox, oy)
-
+            ctx.move_to(ox, -oy)
             ctx.select_font_face(
                 *_cairo_font_args_from_font_prop(ttfFontProperty(font)))
-            ctx.set_font_size(fontsize * self.dpi / 72)
-            ctx.show_text(s)
+            ctx.set_font_size(self.points_to_pixels(fontsize))
+            ctx.show_text(chr(idx))
 
         for ox, oy, w, h in rects:
             ctx.new_path()
-            ctx.rectangle(ox, oy, w, h)
+            ctx.rectangle(ox, -oy, w, -h)
             ctx.set_source_rgb(0, 0, 0)
             ctx.fill_preserve()
 
@@ -286,9 +286,12 @@ class RendererCairo(RendererBase):
     def get_text_width_height_descent(self, s, prop, ismath):
         # docstring inherited
 
+        if ismath == 'TeX':
+            return super().get_text_width_height_descent(s, prop, ismath)
+
         if ismath:
-            width, height, descent, fonts, used_characters = \
-                self.mathtext_parser.parse(s, self.dpi, prop)
+            width, height, descent, *_ = \
+                self._text2path.mathtext_parser.parse(s, self.dpi, prop)
             return width, height, descent
 
         ctx = self.text_ctx
@@ -297,9 +300,7 @@ class RendererCairo(RendererBase):
         # save/restore prevents the problem
         ctx.save()
         ctx.select_font_face(*_cairo_font_args_from_font_prop(prop))
-        # Cairo (says it) uses 1/96 inch user space units, ref: cairo_gstate.c
-        # but if /96.0 is used the font is too small
-        ctx.set_font_size(prop.get_size_in_points() * self.dpi / 72)
+        ctx.set_font_size(self.points_to_pixels(prop.get_size_in_points()))
 
         y_bearing, w, h = ctx.text_extents(s)[1:4]
         ctx.restore()
@@ -332,14 +333,14 @@ class GraphicsContextCairo(GraphicsContextBase):
     }
 
     def __init__(self, renderer):
-        GraphicsContextBase.__init__(self)
+        super().__init__()
         self.renderer = renderer
 
     def restore(self):
         self.ctx.restore()
 
     def set_alpha(self, alpha):
-        GraphicsContextBase.set_alpha(self, alpha)
+        super().set_alpha(alpha)
         _alpha = self.get_alpha()
         rgb = self._rgb
         if self.get_forced_alpha():
@@ -347,12 +348,12 @@ class GraphicsContextCairo(GraphicsContextBase):
         else:
             self.ctx.set_source_rgba(rgb[0], rgb[1], rgb[2], rgb[3])
 
-    # def set_antialiased(self, b):
-        # cairo has many antialiasing modes, we need to pick one for True and
-        # one for False.
+    def set_antialiased(self, b):
+        self.ctx.set_antialias(
+            cairo.ANTIALIAS_DEFAULT if b else cairo.ANTIALIAS_NONE)
 
     def set_capstyle(self, cs):
-        self.ctx.set_line_cap(cbook._check_getitem(self._capd, capstyle=cs))
+        self.ctx.set_line_cap(_api.check_getitem(self._capd, capstyle=cs))
         self._capstyle = cs
 
     def set_clip_rectangle(self, rectangle):
@@ -385,7 +386,7 @@ class GraphicsContextCairo(GraphicsContextBase):
                 offset)
 
     def set_foreground(self, fg, isRGBA=None):
-        GraphicsContextBase.set_foreground(self, fg, isRGBA)
+        super().set_foreground(fg, isRGBA)
         if len(self._rgb) == 3:
             self.ctx.set_source_rgb(*self._rgb)
         else:
@@ -395,7 +396,7 @@ class GraphicsContextCairo(GraphicsContextBase):
         return self.ctx.get_source().get_rgba()[:3]
 
     def set_joinstyle(self, js):
-        self.ctx.set_line_join(cbook._check_getitem(self._joind, joinstyle=js))
+        self.ctx.set_line_join(_api.check_getitem(self._joind, joinstyle=js))
         self._joinstyle = js
 
     def set_linewidth(self, w):
@@ -410,6 +411,18 @@ class _CairoRegion:
 
 
 class FigureCanvasCairo(FigureCanvasBase):
+    @property
+    def _renderer(self):
+        # In theory, _renderer should be set in __init__, but GUI canvas
+        # subclasses (FigureCanvasFooCairo) don't always interact well with
+        # multiple inheritance (FigureCanvasFoo inits but doesn't super-init
+        # FigureCanvasCairo), so initialize it in the getter instead.
+        if not hasattr(self, "_cached_renderer"):
+            self._cached_renderer = RendererCairo(self.figure.dpi)
+        return self._cached_renderer
+
+    def get_renderer(self):
+        return self._renderer
 
     def copy_from_bbox(self, bbox):
         surface = self._renderer.gc.ctx.get_target()
@@ -444,11 +457,9 @@ class FigureCanvasCairo(FigureCanvasBase):
         surface.mark_dirty_rectangle(
             slx.start, sly.start, slx.stop - slx.start, sly.stop - sly.start)
 
-    @_check_savefig_extra_args
     def print_png(self, fobj):
         self._get_printed_image_surface().write_to_png(fobj)
 
-    @_check_savefig_extra_args
     def print_rgba(self, fobj):
         width, height = self.get_width_height()
         buf = self._get_printed_image_surface().get_data()
@@ -458,28 +469,14 @@ class FigureCanvasCairo(FigureCanvasBase):
     print_raw = print_rgba
 
     def _get_printed_image_surface(self):
+        self._renderer.dpi = self.figure.dpi
         width, height = self.get_width_height()
-        renderer = RendererCairo(self.figure.dpi)
-        renderer.set_width_height(width, height)
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        renderer.set_ctx_from_surface(surface)
-        self.figure.draw(renderer)
+        self._renderer.set_context(cairo.Context(surface))
+        self.figure.draw(self._renderer)
         return surface
 
-    def print_pdf(self, fobj, *args, **kwargs):
-        return self._save(fobj, 'pdf', *args, **kwargs)
-
-    def print_ps(self, fobj, *args, **kwargs):
-        return self._save(fobj, 'ps', *args, **kwargs)
-
-    def print_svg(self, fobj, *args, **kwargs):
-        return self._save(fobj, 'svg', *args, **kwargs)
-
-    def print_svgz(self, fobj, *args, **kwargs):
-        return self._save(fobj, 'svgz', *args, **kwargs)
-
-    @_check_savefig_extra_args
-    def _save(self, fo, fmt, *, orientation='portrait'):
+    def _save(self, fmt, fobj, *, orientation='portrait'):
         # save PDF/PS/SVG
 
         dpi = 72
@@ -495,42 +492,58 @@ class FigureCanvasCairo(FigureCanvasBase):
             if not hasattr(cairo, 'PSSurface'):
                 raise RuntimeError('cairo has not been compiled with PS '
                                    'support enabled')
-            surface = cairo.PSSurface(fo, width_in_points, height_in_points)
+            surface = cairo.PSSurface(fobj, width_in_points, height_in_points)
         elif fmt == 'pdf':
             if not hasattr(cairo, 'PDFSurface'):
                 raise RuntimeError('cairo has not been compiled with PDF '
                                    'support enabled')
-            surface = cairo.PDFSurface(fo, width_in_points, height_in_points)
+            surface = cairo.PDFSurface(fobj, width_in_points, height_in_points)
         elif fmt in ('svg', 'svgz'):
             if not hasattr(cairo, 'SVGSurface'):
                 raise RuntimeError('cairo has not been compiled with SVG '
                                    'support enabled')
             if fmt == 'svgz':
-                if isinstance(fo, str):
-                    fo = gzip.GzipFile(fo, 'wb')
+                if isinstance(fobj, str):
+                    fobj = gzip.GzipFile(fobj, 'wb')
                 else:
-                    fo = gzip.GzipFile(None, 'wb', fileobj=fo)
-            surface = cairo.SVGSurface(fo, width_in_points, height_in_points)
+                    fobj = gzip.GzipFile(None, 'wb', fileobj=fobj)
+            surface = cairo.SVGSurface(fobj, width_in_points, height_in_points)
         else:
             raise ValueError("Unknown format: {!r}".format(fmt))
 
-        # surface.set_dpi() can be used
-        renderer = RendererCairo(self.figure.dpi)
-        renderer.set_width_height(width_in_points, height_in_points)
-        renderer.set_ctx_from_surface(surface)
-        ctx = renderer.gc.ctx
+        self._renderer.dpi = self.figure.dpi
+        self._renderer.set_context(cairo.Context(surface))
+        ctx = self._renderer.gc.ctx
 
         if orientation == 'landscape':
             ctx.rotate(np.pi / 2)
             ctx.translate(0, -height_in_points)
             # Perhaps add an '%%Orientation: Landscape' comment?
 
-        self.figure.draw(renderer)
+        self.figure.draw(self._renderer)
 
         ctx.show_page()
         surface.finish()
         if fmt == 'svgz':
-            fo.close()
+            fobj.close()
+
+    print_pdf = functools.partialmethod(_save, "pdf")
+    print_ps = functools.partialmethod(_save, "ps")
+    print_svg = functools.partialmethod(_save, "svg")
+    print_svgz = functools.partialmethod(_save, "svgz")
+
+
+@_api.deprecated("3.6")
+class _RendererGTKCairo(RendererCairo):
+    def set_context(self, ctx):
+        if (cairo.__name__ == "cairocffi"
+                and not isinstance(ctx, cairo.Context)):
+            ctx = cairo.Context._from_pointer(
+                cairo.ffi.cast(
+                    'cairo_t **',
+                    id(ctx) + object.__basicsize__)[0],
+                incref=True)
+        self.gc.ctx = ctx
 
 
 @_Backend.export

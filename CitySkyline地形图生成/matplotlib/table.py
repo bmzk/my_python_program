@@ -9,6 +9,11 @@
 """
 Tables drawing.
 
+.. note::
+    The table implementation in Matplotlib is lightly maintained. For a more
+    featureful table implementation, you may wish to try `blume
+    <https://github.com/swfiua/blume>`_.
+
 Use the factory function `~matplotlib.table.table` to create a ready-made
 table from texts. If you need more control, use the `.Table` class and its
 methods.
@@ -19,7 +24,7 @@ The cell (0, 0) is positioned at the top left.
 Thanks to John Gill for providing the class and table.
 """
 
-from . import artist, cbook, docstring
+from . import _api, _docstring
 from .artist import Artist, allow_rasterization
 from .patches import Rectangle
 from .text import Text
@@ -46,6 +51,7 @@ class Cell(Rectangle):
                      'vertical':     'RL'
                      }
 
+    @_api.make_keyword_only("3.6", name="edgecolor")
     def __init__(self, xy, width, height,
                  edgecolor='k', facecolor='w',
                  fill=True,
@@ -85,8 +91,8 @@ class Cell(Rectangle):
         """
 
         # Call base
-        Rectangle.__init__(self, xy, width=width, height=height, fill=fill,
-                           edgecolor=edgecolor, facecolor=facecolor)
+        super().__init__(xy, width=width, height=height, fill=fill,
+                         edgecolor=edgecolor, facecolor=facecolor)
         self.set_clip_on(False)
         self.visible_edges = visible_edges
 
@@ -99,12 +105,12 @@ class Cell(Rectangle):
                           horizontalalignment=loc, verticalalignment='center')
 
     def set_transform(self, trans):
-        Rectangle.set_transform(self, trans)
+        super().set_transform(trans)
         # the text does not get the transform!
         self.stale = True
 
     def set_figure(self, fig):
-        Rectangle.set_figure(self, fig)
+        super().set_figure(fig)
         self._text.set_figure(fig)
 
     def get_text(self):
@@ -136,7 +142,7 @@ class Cell(Rectangle):
         if not self.get_visible():
             return
         # draw the rectangle
-        Rectangle.draw(self, renderer)
+        super().draw(renderer)
         # position the text
         self._set_text_position(renderer)
         self._text.draw(renderer)
@@ -170,16 +176,16 @@ class Cell(Rectangle):
         l, b, w, h = self.get_text_bounds(renderer)
         return w * (1.0 + (2.0 * self.PAD))
 
-    @docstring.dedent_interpd
+    @_docstring.dedent_interpd
     def set_text_props(self, **kwargs):
         """
         Update the text properties.
 
         Valid keyword arguments are:
 
-        %(Text)s
+        %(Text:kwdoc)s
         """
-        self._text.update(kwargs)
+        self._text._internal_update(kwargs)
         self.stale = True
 
     @property
@@ -289,7 +295,7 @@ class Table(Artist):
             `.Artist` properties.
         """
 
-        Artist.__init__(self)
+        super().__init__()
 
         if isinstance(loc, str):
             if loc not in self.codes:
@@ -310,7 +316,7 @@ class Table(Artist):
         self._edges = None
         self._autoColumns = []
         self._autoFontsize = True
-        self.update(kwargs)
+        self._internal_update(kwargs)
 
         self.set_clip_on(False)
 
@@ -342,7 +348,7 @@ class Table(Artist):
         """
         Set a custom cell in a given position.
         """
-        cbook._check_isinstance(Cell, cell=cell)
+        _api.check_isinstance(Cell, cell=cell)
         try:
             row, col = position[0], position[1]
         except Exception as err:
@@ -393,7 +399,7 @@ class Table(Artist):
         # Need a renderer to do hit tests on mouseevent; assume the last one
         # will do
         if renderer is None:
-            renderer = self.figure._cachedRenderer
+            renderer = self.figure._get_renderer()
         if renderer is None:
             raise RuntimeError('No renderer defined')
 
@@ -427,7 +433,7 @@ class Table(Artist):
             return inside, info
         # TODO: Return index of the cell containing the cursor so that the user
         # doesn't have to bind to each one individually.
-        renderer = self.figure._cachedRenderer
+        renderer = self.figure._get_renderer()
         if renderer is not None:
             boxes = [cell.get_window_extent(renderer)
                      for (row, col), cell in self._cells.items()
@@ -441,8 +447,10 @@ class Table(Artist):
         """Return the Artists contained by the table."""
         return list(self._cells.values())
 
-    def get_window_extent(self, renderer):
-        """Return the bounding box of the table in window coords."""
+    def get_window_extent(self, renderer=None):
+        # docstring inherited
+        if renderer is None:
+            renderer = self.figure._get_renderer()
         self._update_positions(renderer)
         boxes = [cell.get_window_extent(renderer)
                  for cell in self._cells.values()]
@@ -639,10 +647,7 @@ class Table(Artist):
         return self._cells
 
 
-docstring.interpd.update(Table=artist.kwdoc(Table))
-
-
-@docstring.dedent_interpd
+@_docstring.dedent_interpd
 def table(ax,
           cellText=None, cellColours=None,
           cellLoc='right', colWidths=None,
@@ -723,7 +728,7 @@ def table(ax,
     **kwargs
         `.Table` properties.
 
-    %(Table)s
+    %(Table:kwdoc)s
     """
 
     if cellColours is None and cellText is None:

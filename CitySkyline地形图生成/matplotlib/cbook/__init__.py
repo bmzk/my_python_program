@@ -12,28 +12,35 @@ import contextlib
 import functools
 import gzip
 import itertools
+import math
 import operator
 import os
 from pathlib import Path
-import re
 import shlex
 import subprocess
 import sys
 import time
 import traceback
 import types
-import warnings
 import weakref
 
 import numpy as np
 
 import matplotlib
-from .deprecation import (
-    deprecated, warn_deprecated,
-    _rename_parameter, _delete_parameter, _make_keyword_only,
-    _deprecate_method_override, _deprecate_privatize_attribute,
-    _suppress_matplotlib_deprecation_warning,
-    MatplotlibDeprecationWarning, mplDeprecation)
+from matplotlib import _api, _c_internal_utils
+
+
+@_api.caching_module_getattr
+class __getattr__:
+    # module-level deprecations
+    MatplotlibDeprecationWarning = _api.deprecated(
+        "3.6", obj_type="",
+        alternative="matplotlib.MatplotlibDeprecationWarning")(
+        property(lambda self: _api.deprecation.MatplotlibDeprecationWarning))
+    mplDeprecation = _api.deprecated(
+        "3.6", obj_type="",
+        alternative="matplotlib.MatplotlibDeprecationWarning")(
+        property(lambda self: _api.deprecation.MatplotlibDeprecationWarning))
 
 
 def _get_running_interactive_framework():
@@ -44,34 +51,42 @@ def _get_running_interactive_framework():
     Returns
     -------
     Optional[str]
-        One of the following values: "qt5", "qt4", "gtk3", "wx", "tk",
+        One of the following values: "qt", "gtk3", "gtk4", "wx", "tk",
         "macosx", "headless", ``None``.
     """
-    QtWidgets = (sys.modules.get("PyQt5.QtWidgets")
-                 or sys.modules.get("PySide2.QtWidgets"))
+    # Use ``sys.modules.get(name)`` rather than ``name in sys.modules`` as
+    # entries can also have been explicitly set to None.
+    QtWidgets = (
+        sys.modules.get("PyQt6.QtWidgets")
+        or sys.modules.get("PySide6.QtWidgets")
+        or sys.modules.get("PyQt5.QtWidgets")
+        or sys.modules.get("PySide2.QtWidgets")
+    )
     if QtWidgets and QtWidgets.QApplication.instance():
-        return "qt5"
-    QtGui = (sys.modules.get("PyQt4.QtGui")
-             or sys.modules.get("PySide.QtGui"))
-    if QtGui and QtGui.QApplication.instance():
-        return "qt4"
+        return "qt"
     Gtk = sys.modules.get("gi.repository.Gtk")
-    if Gtk and Gtk.main_level():
-        return "gtk3"
+    if Gtk:
+        if Gtk.MAJOR_VERSION == 4:
+            from gi.repository import GLib
+            if GLib.main_depth():
+                return "gtk4"
+        if Gtk.MAJOR_VERSION == 3 and Gtk.main_level():
+            return "gtk3"
     wx = sys.modules.get("wx")
     if wx and wx.GetApp():
         return "wx"
     tkinter = sys.modules.get("tkinter")
     if tkinter:
+        codes = {tkinter.mainloop.__code__, tkinter.Misc.mainloop.__code__}
         for frame in sys._current_frames().values():
             while frame:
-                if frame.f_code == tkinter.mainloop.__code__:
+                if frame.f_code in codes:
                     return "tk"
                 frame = frame.f_back
-    if 'matplotlib.backends._macosx' in sys.modules:
-        if sys.modules["matplotlib.backends._macosx"].event_loop_is_running():
-            return "macosx"
-    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+    macosx = sys.modules.get("matplotlib.backends._macosx")
+    if macosx and macosx.event_loop_is_running():
+        return "macosx"
+    if not _c_internal_utils.display_is_valid():
         return "headless"
     return None
 
@@ -101,9 +116,20 @@ class _StrongRef:
         return hash(self._obj)
 
 
+def _weak_or_strong_ref(func, callback):
+    """
+    Return a `WeakMethod` wrapping *func* if possible, else a `_StrongRef`.
+    """
+    try:
+        return weakref.WeakMethod(func, callback)
+    except TypeError:
+        return _StrongRef(func)
+
+
 class CallbackRegistry:
     """
-    Handle registering and disconnecting for a set of signals and callbacks:
+    Handle registering, processing, blocking, and disconnecting
+    for a set of signals and callbacks:
 
         >>> def oneat(x):
         ...    print('eat', x)
@@ -120,9 +146,15 @@ class CallbackRegistry:
         drink 123
         >>> callbacks.process('eat', 456)
         eat 456
-        >>> callbacks.process('be merry', 456) # nothing will be called
+        >>> callbacks.process('be merry', 456)   # nothing will be called
+
         >>> callbacks.disconnect(id_eat)
-        >>> callbacks.process('eat', 456)      # nothing will be called
+        >>> callbacks.process('eat', 456)        # nothing will be called
+
+        >>> with callbacks.blocked(signal='drink'):
+        ...     callbacks.process('drink', 123)  # nothing will be called
+        >>> callbacks.process('drink', 123)
+        drink 123
 
     In practice, one should always disconnect all callbacks when they are
     no longer needed to avoid dangling references (and thus memory leaks).
@@ -135,50 +167,82 @@ class CallbackRegistry:
     Parameters
     ----------
     exception_handler : callable, optional
-       If provided must have signature ::
+       If not None, *exception_handler* must be a function that takes an
+       `Exception` as single parameter.  It gets called with any `Exception`
+       raised by the callbacks during `CallbackRegistry.process`, and may
+       either re-raise the exception or handle it in another manner.
 
-          def handler(exc: Exception) -> None:
+       The default handler prints the exception (with `traceback.print_exc`) if
+       an interactive event loop is running; it re-raises the exception if no
+       interactive event loop is running.
 
-       If not None this function will be called with any `Exception`
-       subclass raised by the callbacks in `CallbackRegistry.process`.
-       The handler may either consume the exception or re-raise.
-
-       The callable must be pickle-able.
-
-       The default handler is ::
-
-          def h(exc):
-              traceback.print_exc()
+    signals : list, optional
+        If not None, *signals* is a list of signals that this registry handles:
+        attempting to `process` or to `connect` to a signal not in the list
+        throws a `ValueError`.  The default, None, does not restrict the
+        handled signals.
     """
 
     # We maintain two mappings:
     #   callbacks: signal -> {cid -> weakref-to-callback}
     #   _func_cid_map: signal -> {weakref-to-callback -> cid}
 
-    def __init__(self, exception_handler=_exception_printer):
+    def __init__(self, exception_handler=_exception_printer, *, signals=None):
+        self._signals = None if signals is None else list(signals)  # Copy it.
         self.exception_handler = exception_handler
         self.callbacks = {}
         self._cid_gen = itertools.count()
         self._func_cid_map = {}
+        # A hidden variable that marks cids that need to be pickled.
+        self._pickled_cids = set()
 
     def __getstate__(self):
-        # In general, callbacks may not be pickled, so we just drop them.
-        return {**vars(self), "callbacks": {}, "_func_cid_map": {}}
+        return {
+            **vars(self),
+            # In general, callbacks may not be pickled, so we just drop them,
+            # unless directed otherwise by self._pickled_cids.
+            "callbacks": {s: {cid: proxy() for cid, proxy in d.items()
+                              if cid in self._pickled_cids}
+                          for s, d in self.callbacks.items()},
+            # It is simpler to reconstruct this from callbacks in __setstate__.
+            "_func_cid_map": None,
+        }
 
-    def connect(self, s, func):
-        """Register *func* to be called when signal *s* is generated."""
-        self._func_cid_map.setdefault(s, {})
-        try:
-            proxy = weakref.WeakMethod(func, self._remove_proxy)
-        except TypeError:
-            proxy = _StrongRef(func)
-        if proxy in self._func_cid_map[s]:
-            return self._func_cid_map[s][proxy]
+    def __setstate__(self, state):
+        vars(self).update(state)
+        self.callbacks = {
+            s: {cid: _weak_or_strong_ref(func, self._remove_proxy)
+                for cid, func in d.items()}
+            for s, d in self.callbacks.items()}
+        self._func_cid_map = {
+            s: {proxy: cid for cid, proxy in d.items()}
+            for s, d in self.callbacks.items()}
 
+    def connect(self, signal, func):
+        """Register *func* to be called when signal *signal* is generated."""
+        if signal == "units finalize":
+            _api.warn_deprecated(
+                "3.5", name=signal, obj_type="signal", alternative="units")
+        if self._signals is not None:
+            _api.check_in_list(self._signals, signal=signal)
+        self._func_cid_map.setdefault(signal, {})
+        proxy = _weak_or_strong_ref(func, self._remove_proxy)
+        if proxy in self._func_cid_map[signal]:
+            return self._func_cid_map[signal][proxy]
         cid = next(self._cid_gen)
-        self._func_cid_map[s][proxy] = cid
-        self.callbacks.setdefault(s, {})
-        self.callbacks[s][cid] = proxy
+        self._func_cid_map[signal][proxy] = cid
+        self.callbacks.setdefault(signal, {})
+        self.callbacks[signal][cid] = proxy
+        return cid
+
+    def _connect_picklable(self, signal, func):
+        """
+        Like `.connect`, but the callback is kept when pickling/unpickling.
+
+        Currently internal-use only.
+        """
+        cid = self.connect(signal, func)
+        self._pickled_cids.add(cid)
         return cid
 
     # Keep a reference to sys.is_finalizing, as sys may have been cleared out
@@ -187,28 +251,45 @@ class CallbackRegistry:
         if _is_finalizing():
             # Weakrefs can't be properly torn down at that point anymore.
             return
-        for signal, proxies in list(self._func_cid_map.items()):
-            try:
-                del self.callbacks[signal][proxies[proxy]]
-            except KeyError:
-                pass
-            if len(self.callbacks[signal]) == 0:
-                del self.callbacks[signal]
-                del self._func_cid_map[signal]
+        for signal, proxy_to_cid in list(self._func_cid_map.items()):
+            cid = proxy_to_cid.pop(proxy, None)
+            if cid is not None:
+                del self.callbacks[signal][cid]
+                self._pickled_cids.discard(cid)
+                break
+        else:
+            # Not found
+            return
+        # Clean up empty dicts
+        if len(self.callbacks[signal]) == 0:
+            del self.callbacks[signal]
+            del self._func_cid_map[signal]
 
     def disconnect(self, cid):
-        """Disconnect the callback registered with callback id *cid*."""
-        for eventname, callbackd in list(self.callbacks.items()):
-            try:
-                del callbackd[cid]
-            except KeyError:
-                continue
-            else:
-                for signal, functions in list(self._func_cid_map.items()):
-                    for function, value in list(functions.items()):
-                        if value == cid:
-                            del functions[function]
-                return
+        """
+        Disconnect the callback registered with callback id *cid*.
+
+        No error is raised if such a callback does not exist.
+        """
+        self._pickled_cids.discard(cid)
+        # Clean up callbacks
+        for signal, cid_to_proxy in list(self.callbacks.items()):
+            proxy = cid_to_proxy.pop(cid, None)
+            if proxy is not None:
+                break
+        else:
+            # Not found
+            return
+
+        proxy_to_cid = self._func_cid_map[signal]
+        for current_proxy, current_cid in list(proxy_to_cid.items()):
+            if current_cid == cid:
+                assert proxy is current_proxy
+                del proxy_to_cid[current_proxy]
+        # Clean up empty dicts
+        if len(self.callbacks[signal]) == 0:
+            del self.callbacks[signal]
+            del self._func_cid_map[signal]
 
     def process(self, s, *args, **kwargs):
         """
@@ -217,6 +298,8 @@ class CallbackRegistry:
         All of the functions registered to receive callbacks on *s* will be
         called with ``*args`` and ``**kwargs``.
         """
+        if self._signals is not None:
+            _api.check_in_list(self._signals, signal=s)
         for cid, ref in list(self.callbacks.get(s, {}).items()):
             func = ref()
             if func is not None:
@@ -229,6 +312,31 @@ class CallbackRegistry:
                         self.exception_handler(exc)
                     else:
                         raise
+
+    @contextlib.contextmanager
+    def blocked(self, *, signal=None):
+        """
+        Block callback signals from being processed.
+
+        A context manager to temporarily block/disable callback signals
+        from being processed by the registered listeners.
+
+        Parameters
+        ----------
+        signal : str, optional
+            The callback signal to block. The default is to block all signals.
+        """
+        orig = self.callbacks
+        try:
+            if signal is None:
+                # Empty out the callbacks
+                self.callbacks = {}
+            else:
+                # Only remove the specific signal
+                self.callbacks = {k: orig[k] for k in orig if k != signal}
+            yield
+        finally:
+            self.callbacks = orig
 
 
 class silent_list(list):
@@ -247,66 +355,27 @@ class silent_list(list):
     one will get ::
 
         <a list of 3 Line2D objects>
+
+    If ``self.type`` is None, the type name is obtained from the first item in
+    the list (if any).
     """
+
     def __init__(self, type, seq=None):
         self.type = type
         if seq is not None:
             self.extend(seq)
 
     def __repr__(self):
-        return '<a list of %d %s objects>' % (len(self), self.type)
-
-
-@deprecated("3.3")
-class IgnoredKeywordWarning(UserWarning):
-    """
-    A class for issuing warnings about keyword arguments that will be ignored
-    by Matplotlib.
-    """
-    pass
-
-
-@deprecated("3.3", alternative="normalize_kwargs")
-def local_over_kwdict(local_var, kwargs, *keys):
-    """
-    Enforces the priority of a local variable over potentially conflicting
-    argument(s) from a kwargs dict. The following possible output values are
-    considered in order of priority::
-
-        local_var > kwargs[keys[0]] > ... > kwargs[keys[-1]]
-
-    The first of these whose value is not None will be returned. If all are
-    None then None will be returned. Each key in keys will be removed from the
-    kwargs dict in place.
-
-    Parameters
-    ----------
-    local_var : any object
-        The local variable (highest priority).
-
-    kwargs : dict
-        Dictionary of keyword arguments; modified in place.
-
-    keys : str(s)
-        Name(s) of keyword arguments to process, in descending order of
-        priority.
-
-    Returns
-    -------
-    any object
-        Either local_var or one of kwargs[key] for key in keys.
-
-    Raises
-    ------
-    IgnoredKeywordWarning
-        For each key in keys that is removed from kwargs but not used as
-        the output value.
-    """
-    return _local_over_kwdict(local_var, kwargs, *keys, IgnoredKeywordWarning)
+        if self.type is not None or len(self) != 0:
+            tp = self.type if self.type is not None else type(self[0]).__name__
+            return f"<a list of {len(self)} {tp} objects>"
+        else:
+            return "<an empty list>"
 
 
 def _local_over_kwdict(
-        local_var, kwargs, *keys, warning_cls=MatplotlibDeprecationWarning):
+        local_var, kwargs, *keys,
+        warning_cls=_api.MatplotlibDeprecationWarning):
     out = local_var
     for key in keys:
         kwarg_val = kwargs.pop(key, None)
@@ -314,8 +383,8 @@ def _local_over_kwdict(
             if out is None:
                 out = kwarg_val
             else:
-                _warn_external('"%s" keyword argument will be ignored' % key,
-                               warning_cls)
+                _api.warn_external(f'"{key}" keyword argument will be ignored',
+                                   warning_cls)
     return out
 
 
@@ -340,6 +409,26 @@ def strip_math(s):
         ]:
             s = s.replace(tex, plain)
     return s
+
+
+def _strip_comment(s):
+    """Strip everything from the first unquoted #."""
+    pos = 0
+    while True:
+        quote_pos = s.find('"', pos)
+        hash_pos = s.find('#', pos)
+        if quote_pos < 0:
+            without_comment = s if hash_pos < 0 else s[:hash_pos]
+            return without_comment.strip()
+        elif 0 <= hash_pos < quote_pos:
+            return s[:hash_pos].strip()
+        else:
+            closing_quote_pos = s.find('"', quote_pos + 1)
+            if closing_quote_pos < 0:
+                raise ValueError(
+                    f"Missing closing quote in: {s!r}. If you need a double-"
+                    'quote inside a string, use escaping: e.g. "the \" char"')
+            pos = closing_quote_pos + 1  # behind closing quote
 
 
 def is_writable_file_like(obj):
@@ -372,14 +461,14 @@ def to_filehandle(fname, flag='r', return_opened=False, encoding=None):
     fname : str or path-like or file-like
         If `str` or `os.PathLike`, the file is opened using the flags specified
         by *flag* and *encoding*.  If a file-like object, it is passed through.
-    flag : str, default 'r'
+    flag : str, default: 'r'
         Passed as the *mode* argument to `open` when *fname* is `str` or
         `os.PathLike`; ignored if *fname* is file-like.
-    return_opened : bool, default False
+    return_opened : bool, default: False
         If True, return both the file object and a boolean indicating whether
         this was a new file (that the caller needs to close).  If False, return
         only the new file.
-    encoding : str or None, default None
+    encoding : str or None, default: None
         Passed as the *mode* argument to `open` when *fname* is `str` or
         `os.PathLike`; ignored if *fname* is file-like.
 
@@ -391,16 +480,11 @@ def to_filehandle(fname, flag='r', return_opened=False, encoding=None):
     """
     if isinstance(fname, os.PathLike):
         fname = os.fspath(fname)
-    if "U" in flag:
-        warn_deprecated("3.3", message="Passing a flag containing 'U' to "
-                        "to_filehandle() is deprecated since %(since)s and "
-                        "will be removed %(removal)s.")
-        flag = flag.replace("U", "")
     if isinstance(fname, str):
         if fname.endswith('.gz'):
             fh = gzip.open(fname, flag)
         elif fname.endswith('.bz2'):
-            # python may not be complied with bz2 support,
+            # python may not be compiled with bz2 support,
             # bury import until we need it
             import bz2
             fh = bz2.BZ2File(fname, flag)
@@ -417,15 +501,10 @@ def to_filehandle(fname, flag='r', return_opened=False, encoding=None):
     return fh
 
 
-@contextlib.contextmanager
 def open_file_cm(path_or_file, mode="r", encoding=None):
     r"""Pass through file objects and context-manage path-likes."""
     fh, opened = to_filehandle(path_or_file, mode, True, encoding)
-    if opened:
-        with fh:
-            yield fh
-    else:
-        yield fh
+    return fh if opened else contextlib.nullcontext(fh)
 
 
 def is_scalar_or_string(val):
@@ -456,7 +535,7 @@ def get_sample_data(fname, asfileobj=True, *, np_load=False):
             if np_load:
                 return np.load(path)
             else:
-                warn_deprecated(
+                _api.warn_deprecated(
                     "3.3", message="In a future release, get_sample_data "
                     "will automatically load numpy arrays.  Set np_load to "
                     "True to get the array and suppress this warning.  Set "
@@ -473,7 +552,7 @@ def get_sample_data(fname, asfileobj=True, *, np_load=False):
 
 def _get_data_path(*args):
     """
-    Return the `Path` to a resource file provided by Matplotlib.
+    Return the `pathlib.Path` to a resource file provided by Matplotlib.
 
     ``*args`` specify a path relative to the base data path.
     """
@@ -502,23 +581,7 @@ def flatten(seq, scalarp=is_scalar_or_string):
             yield from flatten(item, scalarp)
 
 
-@deprecated("3.3", alternative="os.path.realpath and os.stat")
-@functools.lru_cache()
-def get_realpath_and_stat(path):
-    realpath = os.path.realpath(path)
-    stat = os.stat(realpath)
-    stat_key = (stat.st_ino, stat.st_dev)
-    return realpath, stat_key
-
-
-# A regular expression used to determine the amount of space to
-# remove.  It looks for the first sequence of spaces immediately
-# following the first newline, or at the beginning of the string.
-_find_dedent_regex = re.compile(r"(?:(?:\n\r?)|^)( *)\S")
-# A cache to hold the regexs that actually remove the indent.
-_dedent_regex = {}
-
-
+@_api.deprecated("3.6", alternative="functools.lru_cache")
 class maxdict(dict):
     """
     A dictionary with a maximum size.
@@ -528,18 +591,15 @@ class maxdict(dict):
     This doesn't override all the relevant methods to constrain the size,
     just ``__setitem__``, so use with caution.
     """
+
     def __init__(self, maxsize):
-        dict.__init__(self)
+        super().__init__()
         self.maxsize = maxsize
-        self._killkeys = []
 
     def __setitem__(self, k, v):
-        if k not in self:
-            if len(self) >= self.maxsize:
-                del self[self._killkeys[0]]
-                del self._killkeys[0]
-            self._killkeys.append(k)
-        dict.__setitem__(self, k, v)
+        super().__setitem__(k, v)
+        while len(self) >= self.maxsize:
+            del self[next(iter(self))]
 
 
 class Stack:
@@ -648,6 +708,7 @@ class Stack:
                 self.push(elem)
 
 
+@_api.deprecated("3.5", alternative="psutil.virtual_memory")
 def report_memory(i=0):  # argument may go away
     """Return the memory consumed by the process."""
     def call(command, os_name):
@@ -785,8 +846,8 @@ class Grouper:
     >>> grp.join(a, b)
     >>> grp.join(b, c)
     >>> grp.join(d, e)
-    >>> sorted(map(tuple, grp))
-    [(a, b, c), (d, e)]
+    >>> list(grp)
+    [[a, b, c], [d, e]]
     >>> grp.joined(a, b)
     True
     >>> grp.joined(a, c)
@@ -855,6 +916,34 @@ class Grouper:
         self.clean()
         siblings = self._mapping.get(weakref.ref(a), [weakref.ref(a)])
         return [x() for x in siblings]
+
+
+class GrouperView:
+    """Immutable view over a `.Grouper`."""
+
+    def __init__(self, grouper):
+        self._grouper = grouper
+
+    class _GrouperMethodForwarder:
+        def __init__(self, deprecated_kw=None):
+            self._deprecated_kw = deprecated_kw
+
+        def __set_name__(self, owner, name):
+            wrapped = getattr(Grouper, name)
+            forwarder = functools.wraps(wrapped)(
+                lambda self, *args, **kwargs: wrapped(
+                    self._grouper, *args, **kwargs))
+            if self._deprecated_kw:
+                forwarder = _api.deprecated(**self._deprecated_kw)(forwarder)
+            setattr(owner, name, forwarder)
+
+    __contains__ = _GrouperMethodForwarder()
+    __iter__ = _GrouperMethodForwarder()
+    joined = _GrouperMethodForwarder()
+    get_siblings = _GrouperMethodForwarder()
+    clean = _GrouperMethodForwarder(deprecated_kw=dict(since="3.6"))
+    join = _GrouperMethodForwarder(deprecated_kw=dict(since="3.6"))
+    remove = _GrouperMethodForwarder(deprecated_kw=dict(since="3.6"))
 
 
 def simple_linear_interpolation(a, steps):
@@ -929,7 +1018,7 @@ def delete_masked_points(*args):
             else:
                 x = np.asarray(x)
         margs.append(x)
-    masks = []    # list of masks that are True where good
+    masks = []  # List of masks that are True where good.
     for i, x in enumerate(margs):
         if seqlist[i]:
             if x.ndim > 1:
@@ -979,7 +1068,7 @@ def _combine_masks(*args):
     Masks are obtained from all arguments of the correct length
     in categories 1, 2, and 4; a point is bad if masked in a masked
     array or if it is a nan or inf.  No attempt is made to
-    extract a mask from categories 2 and 4 if :meth:`np.isfinite`
+    extract a mask from categories 2 and 4 if `numpy.isfinite`
     does not yield a Boolean array.  Category 3 is included to
     support RGB or RGBA ndarrays, which are assumed to have only
     valid values and which are passed through unchanged.
@@ -1046,8 +1135,7 @@ def boxplot_stats(X, whis=1.5, bootstrap=None, labels=None,
 
         If a pair of floats, they indicate the percentiles at which to draw the
         whiskers (e.g., (5, 95)).  In particular, setting this to (0, 100)
-        results in whiskers covering the whole range of the data.  "range" is
-        a deprecated synonym for (0, 100).
+        results in whiskers covering the whole range of the data.
 
         In the edge case where ``Q1 == Q3``, *whis* is automatically set to
         (0, 100) (cover the whole range of the data) if *autorange* is True.
@@ -1082,6 +1170,7 @@ def boxplot_stats(X, whis=1.5, bootstrap=None, labels=None,
         med        50th percentile
         q1         first quartile (25th percentile)
         q3         third quartile (75th percentile)
+        iqr        interquartile range
         cilo       lower notch around the median
         cihi       upper notch around the median
         whislo     end of the lower whisker
@@ -1163,11 +1252,11 @@ def boxplot_stats(X, whis=1.5, bootstrap=None, labels=None,
             stats['med'] = np.nan
             stats['q1'] = np.nan
             stats['q3'] = np.nan
+            stats['iqr'] = np.nan
             stats['cilo'] = np.nan
             stats['cihi'] = np.nan
             stats['whislo'] = np.nan
             stats['whishi'] = np.nan
-            stats['med'] = np.nan
             continue
 
         # up-convert to an array, just to be safe
@@ -1190,22 +1279,13 @@ def boxplot_stats(X, whis=1.5, bootstrap=None, labels=None,
         )
 
         # lowest/highest non-outliers
-        if np.isscalar(whis):
-            if np.isreal(whis):
-                loval = q1 - whis * stats['iqr']
-                hival = q3 + whis * stats['iqr']
-            elif whis in ['range', 'limit', 'limits', 'min/max']:
-                warn_deprecated(
-                    "3.2", message=f"Setting whis to {whis!r} is deprecated "
-                    "since %(since)s and support for it will be removed "
-                    "%(removal)s; set it to [0, 100] to achieve the same "
-                    "effect.")
-                loval = np.min(x)
-                hival = np.max(x)
-            else:
-                raise ValueError('whis must be a float or list of percentiles')
-        else:
+        if np.iterable(whis) and not isinstance(whis, str):
             loval, hival = np.percentile(x, whis)
+        elif np.isreal(whis):
+            loval = q1 - whis * stats['iqr']
+            hival = q3 + whis * stats['iqr']
+        else:
+            raise ValueError('whis must be a float or list of percentiles')
 
         # get high extreme
         wiskhi = x[x <= hival]
@@ -1222,7 +1302,7 @@ def boxplot_stats(X, whis=1.5, bootstrap=None, labels=None,
             stats['whislo'] = np.min(wisklo)
 
         # compute a single array of outliers
-        stats['fliers'] = np.hstack([
+        stats['fliers'] = np.concatenate([
             x[x < stats['whislo']],
             x[x > stats['whishi']],
         ])
@@ -1233,9 +1313,9 @@ def boxplot_stats(X, whis=1.5, bootstrap=None, labels=None,
     return bxpstats
 
 
-# The ls_mapper maps short codes for line style to their full name used by
-# backends; the reverse mapper is for mapping full names to short ones.
+#: Maps short codes for line style to their full name used by backends.
 ls_mapper = {'-': 'solid', '--': 'dashed', '-.': 'dashdot', ':': 'dotted'}
+#: Maps full names for line styles used by backends to their short codes.
 ls_mapper_r = {v: k for k, v in ls_mapper.items()}
 
 
@@ -1290,48 +1370,18 @@ def _to_unmasked_float_array(x):
 
 
 def _check_1d(x):
-    """Convert scalars to 1d arrays; pass-through arrays as is."""
-    if not hasattr(x, 'shape') or len(x.shape) < 1:
+    """Convert scalars to 1D arrays; pass-through arrays as is."""
+    # Unpack in case of e.g. Pandas or xarray object
+    x = _unpack_to_numpy(x)
+    # plot requires `shape` and `ndim`.  If passed an
+    # object that doesn't provide them, then force to numpy array.
+    # Note this will strip unit information.
+    if (not hasattr(x, 'shape') or
+            not hasattr(x, 'ndim') or
+            len(x.shape) < 1):
         return np.atleast_1d(x)
     else:
-        try:
-            # work around
-            # https://github.com/pandas-dev/pandas/issues/27775 which
-            # means the shape of multi-dimensional slicing is not as
-            # expected.  That this ever worked was an unintentional
-            # quirk of pandas and will raise an exception in the
-            # future.  This slicing warns in pandas >= 1.0rc0 via
-            # https://github.com/pandas-dev/pandas/pull/30588
-            #
-            # < 1.0rc0 : x[:, None].ndim == 1, no warning, custom type
-            # >= 1.0rc1 : x[:, None].ndim == 2, warns, numpy array
-            # future : x[:, None] -> raises
-            #
-            # This code should correctly identify and coerce to a
-            # numpy array all pandas versions.
-            with warnings.catch_warnings(record=True) as w:
-                warnings.filterwarnings(
-                    "always",
-                    category=Warning,
-                    message='Support for multi-dimensional indexing')
-
-                ndim = x[:, None].ndim
-                # we have definitely hit a pandas index or series object
-                # cast to a numpy array.
-                if len(w) > 0:
-                    return np.asanyarray(x)
-            # We have likely hit a pandas object, or at least
-            # something where 2D slicing does not result in a 2D
-            # object.
-            if ndim < 2:
-                return np.atleast_1d(x)
-            return x
-        # In pandas 1.1.0, multidimensional indexing leads to an
-        # AssertionError for some Series objects, but should be
-        # IndexError as described in
-        # https://github.com/pandas-dev/pandas/issues/35527
-        except (AssertionError, IndexError, TypeError):
-            return np.atleast_1d(x)
+        return x
 
 
 def _reshape_2D(X, name):
@@ -1339,22 +1389,15 @@ def _reshape_2D(X, name):
     Use Fortran ordering to convert ndarrays and lists of iterables to lists of
     1D arrays.
 
-    Lists of iterables are converted by applying `np.asanyarray` to each of
+    Lists of iterables are converted by applying `numpy.asanyarray` to each of
     their elements.  1D ndarrays are returned in a singleton list containing
     them.  2D ndarrays are converted to the list of their *columns*.
 
     *name* is used to generate the error message for invalid inputs.
     """
 
-    # unpack if we have a values or to_numpy method.
-    try:
-        X = X.to_numpy()
-    except AttributeError:
-        try:
-            if isinstance(X.values, np.ndarray):
-                X = X.values
-        except AttributeError:
-            pass
+    # Unpack in case of e.g. Pandas or xarray object
+    X = _unpack_to_numpy(X)
 
     # Iterate over columns for ndarrays.
     if isinstance(X, np.ndarray):
@@ -1380,9 +1423,13 @@ def _reshape_2D(X, name):
     for xi in X:
         # check if this is iterable, except for strings which we
         # treat as singletons.
-        if (isinstance(xi, collections.abc.Iterable) and
-                not isinstance(xi, str)):
-            is_1d = False
+        if not isinstance(xi, str):
+            try:
+                iter(xi)
+            except TypeError:
+                pass
+            else:
+                is_1d = False
         xi = np.asanyarray(xi)
         nd = np.ndim(xi)
         if nd > 1:
@@ -1458,7 +1505,7 @@ def violin_stats(X, method, points=100, quantiles=None):
     # Want quantiles to be as the same shape as data sequences
     if quantiles is not None and len(quantiles) != 0:
         quantiles = _reshape_2D(quantiles, "quantiles")
-    # Else, mock quantiles if is none or empty
+    # Else, mock quantiles if it's none or empty
     else:
         quantiles = [[]] * len(X)
 
@@ -1636,7 +1683,7 @@ def index_of(y):
        The x and y values to plot.
     """
     try:
-        return y.index.values, y.values
+        return y.index.to_numpy(), y.to_numpy()
     except AttributeError:
         pass
     try:
@@ -1653,22 +1700,42 @@ def safe_first_element(obj):
     """
     Return the first element in *obj*.
 
-    This is an type-independent way of obtaining the first element, supporting
-    both index access and the iterator protocol.
+    This is an type-independent way of obtaining the first element,
+    supporting both index access and the iterator protocol.
     """
-    if isinstance(obj, collections.abc.Iterator):
-        # needed to accept `array.flat` as input.
-        # np.flatiter reports as an instance of collections.Iterator
-        # but can still be indexed via [].
-        # This has the side effect of re-setting the iterator, but
-        # that is acceptable.
-        try:
-            return obj[0]
-        except TypeError:
-            pass
-        raise RuntimeError("matplotlib does not support generators "
-                           "as input")
-    return next(iter(obj))
+    return _safe_first_non_none(obj, skip_none=False)
+
+
+def _safe_first_non_none(obj, skip_none=True):
+    """
+    Return the first non-None element in *obj*.
+    This is a method for internal use.
+
+    This is an type-independent way of obtaining the first non-None element,
+    supporting both index access and the iterator protocol.
+    The first non-None element will be obtained when skip_none is True.
+    """
+    if skip_none is False:
+        if isinstance(obj, collections.abc.Iterator):
+            # needed to accept `array.flat` as input.
+            # np.flatiter reports as an instance of collections.Iterator
+            # but can still be indexed via [].
+            # This has the side effect of re-setting the iterator, but
+            # that is acceptable.
+            try:
+                return obj[0]
+            except TypeError:
+                pass
+            raise RuntimeError("matplotlib does not support generators "
+                               "as input")
+        return next(iter(obj))
+    elif isinstance(obj, np.flatiter):
+        return obj[0]
+    elif isinstance(obj, collections.abc.Iterator):
+        raise RuntimeError("matplotlib does not "
+                           "support generators as input")
+    else:
+        return next(val for val in obj if val is not None)
 
 
 def sanitize_sequence(data):
@@ -1679,58 +1746,37 @@ def sanitize_sequence(data):
             else data)
 
 
-@_delete_parameter("3.3", "required")
-@_delete_parameter("3.3", "forbidden")
-@_delete_parameter("3.3", "allowed")
-def normalize_kwargs(kw, alias_mapping=None, required=(), forbidden=(),
-                     allowed=None):
+def normalize_kwargs(kw, alias_mapping=None):
     """
     Helper function to normalize kwarg inputs.
 
-    The order they are resolved are:
-
-    1. aliasing
-    2. required
-    3. forbidden
-    4. allowed
-
-    This order means that only the canonical names need appear in
-    *allowed*, *forbidden*, *required*.
-
     Parameters
     ----------
-    kw : dict
-        A dict of keyword arguments.
+    kw : dict or None
+        A dict of keyword arguments.  None is explicitly supported and treated
+        as an empty dict, to support functions with an optional parameter of
+        the form ``props=None``.
 
     alias_mapping : dict or Artist subclass or Artist instance, optional
-        A mapping between a canonical name to a list of
-        aliases, in order of precedence from lowest to highest.
+        A mapping between a canonical name to a list of aliases, in order of
+        precedence from lowest to highest.
 
-        If the canonical value is not in the list it is assumed to have
-        the highest priority.
+        If the canonical value is not in the list it is assumed to have the
+        highest priority.
 
         If an Artist subclass or instance is passed, use its properties alias
         mapping.
 
-    required : list of str, optional
-        A list of keys that must be in *kws*.  This parameter is deprecated.
-
-    forbidden : list of str, optional
-        A list of keys which may not be in *kw*.  This parameter is deprecated.
-
-    allowed : list of str, optional
-        A list of allowed fields.  If this not None, then raise if
-        *kw* contains any keys not in the union of *required*
-        and *allowed*.  To allow only the required fields pass in
-        an empty tuple ``allowed=()``.  This parameter is deprecated.
-
     Raises
     ------
     TypeError
-        To match what python raises if invalid args/kwargs are passed to
-        a callable.
+        To match what Python raises if invalid arguments/keyword arguments are
+        passed to a callable.
     """
     from matplotlib.artist import Artist
+
+    if kw is None:
+        return {}
 
     # deal with default value of alias_mapping
     if alias_mapping is None:
@@ -1752,25 +1798,6 @@ def normalize_kwargs(kw, alias_mapping=None, required=(), forbidden=(),
                             f"{k!r}, which are aliases of one another")
         canonical_to_seen[canonical] = k
         ret[canonical] = v
-
-    fail_keys = [k for k in required if k not in ret]
-    if fail_keys:
-        raise TypeError("The required keys {keys!r} "
-                        "are not in kwargs".format(keys=fail_keys))
-
-    fail_keys = [k for k in forbidden if k in ret]
-    if fail_keys:
-        raise TypeError("The forbidden keys {keys!r} "
-                        "are in kwargs".format(keys=fail_keys))
-
-    if allowed is not None:
-        allowed_set = {*required, *allowed}
-        fail_keys = [k for k in ret if k not in allowed_set]
-        if fail_keys:
-            raise TypeError(
-                "kwargs contains {keys!r} which are not in the required "
-                "{req!r} or allowed {allow!r} keys".format(
-                    keys=fail_keys, req=required, allow=allowed))
 
     return ret
 
@@ -1847,61 +1874,6 @@ def _str_lower_equal(obj, s):
     cannot be used in a boolean context.
     """
     return isinstance(obj, str) and obj.lower() == s
-
-
-def _define_aliases(alias_d, cls=None):
-    """
-    Class decorator for defining property aliases.
-
-    Use as ::
-
-        @cbook._define_aliases({"property": ["alias", ...], ...})
-        class C: ...
-
-    For each property, if the corresponding ``get_property`` is defined in the
-    class so far, an alias named ``get_alias`` will be defined; the same will
-    be done for setters.  If neither the getter nor the setter exists, an
-    exception will be raised.
-
-    The alias map is stored as the ``_alias_map`` attribute on the class and
-    can be used by `~.normalize_kwargs` (which assumes that higher priority
-    aliases come last).
-    """
-    if cls is None:  # Return the actual class decorator.
-        return functools.partial(_define_aliases, alias_d)
-
-    def make_alias(name):  # Enforce a closure over *name*.
-        @functools.wraps(getattr(cls, name))
-        def method(self, *args, **kwargs):
-            return getattr(self, name)(*args, **kwargs)
-        return method
-
-    for prop, aliases in alias_d.items():
-        exists = False
-        for prefix in ["get_", "set_"]:
-            if prefix + prop in vars(cls):
-                exists = True
-                for alias in aliases:
-                    method = make_alias(prefix + prop)
-                    method.__name__ = prefix + alias
-                    method.__doc__ = "Alias for `{}`.".format(prefix + prop)
-                    setattr(cls, prefix + alias, method)
-        if not exists:
-            raise ValueError(
-                "Neither getter nor setter exists for {!r}".format(prop))
-
-    def get_aliased_and_aliases(d):
-        return {*d, *(alias for aliases in d.values() for alias in aliases)}
-
-    preexisting_aliases = getattr(cls, "_alias_map", {})
-    conflicting = (get_aliased_and_aliases(preexisting_aliases)
-                   & get_aliased_and_aliases(alias_d))
-    if conflicting:
-        # Need to decide on conflict resolution policy.
-        raise NotImplementedError(
-            f"Parent class already defines conflicting aliases: {conflicting}")
-    cls._alias_map = {**preexisting_aliases, **alias_d}
-    return cls
 
 
 def _array_perimeter(arr):
@@ -2086,28 +2058,6 @@ def _setattr_cm(obj, **kwargs):
                 setattr(obj, attr, orig)
 
 
-def _warn_external(message, category=None):
-    """
-    `warnings.warn` wrapper that sets *stacklevel* to "outside Matplotlib".
-
-    The original emitter of the warning can be obtained by patching this
-    function back to `warnings.warn`, i.e. ``cbook._warn_external =
-    warnings.warn`` (or ``functools.partial(warnings.warn, stacklevel=2)``,
-    etc.).
-    """
-    frame = sys._getframe()
-    for stacklevel in itertools.count(1):  # lgtm[py/unused-loop-variable]
-        if frame is None:
-            # when called in embedded context may hit frame is None
-            break
-        if not re.match(r"\A(matplotlib|mpl_toolkits)(\Z|\.(?!tests\.))",
-                        # Work around sphinx-gallery not setting __name__.
-                        frame.f_globals.get("__name__", "")):
-            break
-        frame = frame.f_back
-    warnings.warn(message, category, stacklevel)
-
-
 class _OrderedSet(collections.abc.MutableSet):
     def __init__(self):
         self._od = collections.OrderedDict()
@@ -2129,7 +2079,7 @@ class _OrderedSet(collections.abc.MutableSet):
         self._od.pop(key, None)
 
 
-# Agg's buffers are unmultiplied RGBA8888, which neither PyQt4 nor cairo
+# Agg's buffers are unmultiplied RGBA8888, which neither PyQt5 nor cairo
 # support; however, both do support premultiplied ARGB32.
 
 
@@ -2169,6 +2119,24 @@ def _unmultiplied_rgba8888_to_premultiplied_argb32(rgba8888):
     if alpha8.min() != 0xff:
         np.multiply(rgb24, alpha8 / 0xff, out=rgb24, casting="unsafe")
     return argb32
+
+
+def _get_nonzero_slices(buf):
+    """
+    Return the bounds of the nonzero region of a 2D array as a pair of slices.
+
+    ``buf[_get_nonzero_slices(buf)]`` is the smallest sub-rectangle in *buf*
+    that encloses all non-zero entries in *buf*.  If *buf* is fully zero, then
+    ``(slice(0, 0), slice(0, 0))`` is returned.
+    """
+    x_nz, = buf.any(axis=0).nonzero()
+    y_nz, = buf.any(axis=1).nonzero()
+    if len(x_nz) and len(y_nz):
+        l, r = x_nz[[0, -1]]
+        b, t = y_nz[[0, -1]]
+        return slice(b, t + 1), slice(l, r + 1)
+    else:
+        return slice(0, 0), slice(0, 0)
 
 
 def _pformat_subprocess(command):
@@ -2211,148 +2179,6 @@ def _check_and_log_subprocess(command, logger, **kwargs):
     return proc.stdout
 
 
-# In the following _check_foo functions, the first parameter starts with an
-# underscore because it is intended to be positional-only (e.g., so that
-# `_check_isinstance([...], types=foo)` doesn't fail.
-
-
-def _check_isinstance(_types, **kwargs):
-    """
-    For each *key, value* pair in *kwargs*, check that *value* is an instance
-    of one of *_types*; if not, raise an appropriate TypeError.
-
-    As a special case, a ``None`` entry in *_types* is treated as NoneType.
-
-    Examples
-    --------
-    >>> cbook._check_isinstance((SomeClass, None), arg=arg)
-    """
-    types = _types
-    if isinstance(types, type) or types is None:
-        types = (types,)
-    none_allowed = None in types
-    types = tuple(tp for tp in types if tp is not None)
-
-    def type_name(tp):
-        return (tp.__qualname__ if tp.__module__ == "builtins"
-                else f"{tp.__module__}.{tp.__qualname__}")
-
-    names = [*map(type_name, types)]
-    if none_allowed:
-        types = (*types, type(None))
-        names.append("None")
-    for k, v in kwargs.items():
-        if not isinstance(v, types):
-            raise TypeError(
-                "{!r} must be an instance of {}, not a {}".format(
-                    k,
-                    ", ".join(names[:-1]) + " or " + names[-1]
-                    if len(names) > 1 else names[0],
-                    type_name(type(v))))
-
-
-def _check_in_list(_values, **kwargs):
-    """
-    For each *key, value* pair in *kwargs*, check that *value* is in *_values*;
-    if not, raise an appropriate ValueError.
-
-    Examples
-    --------
-    >>> cbook._check_in_list(["foo", "bar"], arg=arg, other_arg=other_arg)
-    """
-    values = _values
-    for k, v in kwargs.items():
-        if v not in values:
-            raise ValueError(
-                "{!r} is not a valid value for {}; supported values are {}"
-                .format(v, k, ', '.join(map(repr, values))))
-
-
-def _check_shape(_shape, **kwargs):
-    """
-    For each *key, value* pair in *kwargs*, check that *value* has the shape
-    *_shape*, if not, raise an appropriate ValueError.
-
-    *None* in the shape is treated as a "free" size that can have any length.
-    e.g. (None, 2) -> (N, 2)
-
-    The values checked must be numpy arrays.
-
-    Examples
-    --------
-    To check for (N, 2) shaped arrays
-
-    >>> cbook._check_in_list((None, 2), arg=arg, other_arg=other_arg)
-    """
-    target_shape = _shape
-    for k, v in kwargs.items():
-        data_shape = v.shape
-
-        if len(target_shape) != len(data_shape) or any(
-                t not in [s, None]
-                for t, s in zip(target_shape, data_shape)
-        ):
-            dim_labels = iter(itertools.chain(
-                'MNLIJKLH',
-                (f"D{i}" for i in itertools.count())))
-            text_shape = ", ".join((str(n)
-                                    if n is not None
-                                    else next(dim_labels)
-                                    for n in target_shape))
-
-            raise ValueError(
-                f"{k!r} must be {len(target_shape)}D "
-                f"with shape ({text_shape}). "
-                f"Your input has shape {v.shape}."
-            )
-
-
-def _check_getitem(_mapping, **kwargs):
-    """
-    *kwargs* must consist of a single *key, value* pair.  If *key* is in
-    *_mapping*, return ``_mapping[value]``; else, raise an appropriate
-    ValueError.
-
-    Examples
-    --------
-    >>> cbook._check_getitem({"foo": "bar"}, arg=arg)
-    """
-    mapping = _mapping
-    if len(kwargs) != 1:
-        raise ValueError("_check_getitem takes a single keyword argument")
-    (k, v), = kwargs.items()
-    try:
-        return mapping[v]
-    except KeyError:
-        raise ValueError(
-            "{!r} is not a valid value for {}; supported values are {}"
-            .format(v, k, ', '.join(map(repr, mapping)))) from None
-
-
-class _classproperty:
-    """
-    Like `property`, but also triggers on access via the class, and it is the
-    *class* that's passed as argument.
-
-    Examples
-    --------
-    ::
-
-        class C:
-            @classproperty
-            def foo(cls):
-                return cls.__name__
-
-        assert C.foo == "C"
-    """
-
-    def __init__(self, fget):
-        self._fget = fget
-
-    def __get__(self, instance, owner):
-        return self._fget(owner)
-
-
 def _backend_module_name(name):
     """
     Convert a backend name (either a standard backend -- "Agg", "TkAgg", ... --
@@ -2360,3 +2186,142 @@ def _backend_module_name(name):
     """
     return (name[9:] if name.startswith("module://")
             else "matplotlib.backends.backend_{}".format(name.lower()))
+
+
+def _setup_new_guiapp():
+    """
+    Perform OS-dependent setup when Matplotlib creates a new GUI application.
+    """
+    # Windows: If not explicit app user model id has been set yet (so we're not
+    # already embedded), then set it to "matplotlib", so that taskbar icons are
+    # correct.
+    try:
+        _c_internal_utils.Win32_GetCurrentProcessExplicitAppUserModelID()
+    except OSError:
+        _c_internal_utils.Win32_SetCurrentProcessExplicitAppUserModelID(
+            "matplotlib")
+
+
+def _format_approx(number, precision):
+    """
+    Format the number with at most the number of decimals given as precision.
+    Remove trailing zeros and possibly the decimal point.
+    """
+    return f'{number:.{precision}f}'.rstrip('0').rstrip('.') or '0'
+
+
+def _g_sig_digits(value, delta):
+    """
+    Return the number of significant digits to %g-format *value*, assuming that
+    it is known with an error of *delta*.
+    """
+    if delta == 0:
+        # delta = 0 may occur when trying to format values over a tiny range;
+        # in that case, replace it by the distance to the closest float.
+        delta = abs(np.spacing(value))
+    # If e.g. value = 45.67 and delta = 0.02, then we want to round to 2 digits
+    # after the decimal point (floor(log10(0.02)) = -2); 45.67 contributes 2
+    # digits before the decimal point (floor(log10(45.67)) + 1 = 2): the total
+    # is 4 significant digits.  A value of 0 contributes 1 "digit" before the
+    # decimal point.
+    # For inf or nan, the precision doesn't matter.
+    return max(
+        0,
+        (math.floor(math.log10(abs(value))) + 1 if value else 1)
+        - math.floor(math.log10(delta))) if math.isfinite(value) else 0
+
+
+def _unikey_or_keysym_to_mplkey(unikey, keysym):
+    """
+    Convert a Unicode key or X keysym to a Matplotlib key name.
+
+    The Unicode key is checked first; this avoids having to list most printable
+    keysyms such as ``EuroSign``.
+    """
+    # For non-printable characters, gtk3 passes "\0" whereas tk passes an "".
+    if unikey and unikey.isprintable():
+        return unikey
+    key = keysym.lower()
+    if key.startswith("kp_"):  # keypad_x (including kp_enter).
+        key = key[3:]
+    if key.startswith("page_"):  # page_{up,down}
+        key = key.replace("page_", "page")
+    if key.endswith(("_l", "_r")):  # alt_l, ctrl_l, shift_l.
+        key = key[:-2]
+    key = {
+        "return": "enter",
+        "prior": "pageup",  # Used by tk.
+        "next": "pagedown",  # Used by tk.
+    }.get(key, key)
+    return key
+
+
+@functools.lru_cache(None)
+def _make_class_factory(mixin_class, fmt, attr_name=None):
+    """
+    Return a function that creates picklable classes inheriting from a mixin.
+
+    After ::
+
+        factory = _make_class_factory(FooMixin, fmt, attr_name)
+        FooAxes = factory(Axes)
+
+    ``Foo`` is a class that inherits from ``FooMixin`` and ``Axes`` and **is
+    picklable** (picklability is what differentiates this from a plain call to
+    `type`).  Its ``__name__`` is set to ``fmt.format(Axes.__name__)`` and the
+    base class is stored in the ``attr_name`` attribute, if not None.
+
+    Moreover, the return value of ``factory`` is memoized: calls with the same
+    ``Axes`` class always return the same subclass.
+    """
+
+    @functools.lru_cache(None)
+    def class_factory(axes_class):
+        # if we have already wrapped this class, declare victory!
+        if issubclass(axes_class, mixin_class):
+            return axes_class
+
+        # The parameter is named "axes_class" for backcompat but is really just
+        # a base class; no axes semantics are used.
+        base_class = axes_class
+
+        class subcls(mixin_class, base_class):
+            # Better approximation than __module__ = "matplotlib.cbook".
+            __module__ = mixin_class.__module__
+
+            def __reduce__(self):
+                return (_picklable_class_constructor,
+                        (mixin_class, fmt, attr_name, base_class),
+                        self.__getstate__())
+
+        subcls.__name__ = subcls.__qualname__ = fmt.format(base_class.__name__)
+        if attr_name is not None:
+            setattr(subcls, attr_name, base_class)
+        return subcls
+
+    class_factory.__module__ = mixin_class.__module__
+    return class_factory
+
+
+def _picklable_class_constructor(mixin_class, fmt, attr_name, base_class):
+    """Internal helper for _make_class_factory."""
+    factory = _make_class_factory(mixin_class, fmt, attr_name)
+    cls = factory(base_class)
+    return cls.__new__(cls)
+
+
+def _unpack_to_numpy(x):
+    """Internal helper to extract data from e.g. pandas and xarray objects."""
+    if isinstance(x, np.ndarray):
+        # If numpy, return directly
+        return x
+    if hasattr(x, 'to_numpy'):
+        # Assume that any function to_numpy() do actually return a numpy array
+        return x.to_numpy()
+    if hasattr(x, 'values'):
+        xtmp = x.values
+        # For example a dict has a 'values' attribute, but it is not a property
+        # so in this case we do not want to return a function
+        if isinstance(xtmp, np.ndarray):
+            return xtmp
+    return x

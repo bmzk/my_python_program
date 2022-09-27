@@ -1,23 +1,20 @@
 import datetime
 from io import BytesIO
-import re
-import tempfile
+from pathlib import Path
 import xml.etree.ElementTree
 import xml.parsers.expat
 
-import numpy as np
 import pytest
 
+import numpy as np
+
 import matplotlib as mpl
-from matplotlib import dviread
 from matplotlib.figure import Figure
+from matplotlib.text import Text
 import matplotlib.pyplot as plt
-from matplotlib.testing.decorators import image_comparison
-
-
-needs_usetex = pytest.mark.skipif(
-    not mpl.checkdep_usetex(True),
-    reason="This test needs a TeX installation")
+from matplotlib.testing.decorators import check_figures_equal, image_comparison
+from matplotlib.testing._markers import needs_usetex
+from matplotlib import font_manager as fm
 
 
 def test_visibility():
@@ -41,8 +38,7 @@ def test_visibility():
 
 @image_comparison(['fill_black_with_alpha.svg'], remove_text=True)
 def test_fill_black_with_alpha():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.scatter(x=[0, 0.1, 1], y=[0, 0, 0], c='k', alpha=0.1, s=10000)
 
 
@@ -51,8 +47,7 @@ def test_noscale():
     X, Y = np.meshgrid(np.arange(-5, 5, 1), np.arange(-5, 5, 1))
     Z = np.sin(Y ** 2)
 
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.imshow(Z, cmap='gray', interpolation='none')
 
 
@@ -72,8 +67,7 @@ def test_text_urls():
 
 @image_comparison(['bold_font_output.svg'])
 def test_bold_font_output():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.plot(np.arange(10), np.arange(10))
     ax.set_xlabel('nonbold-xlabel')
     ax.set_ylabel('bold-ylabel', fontweight='bold')
@@ -83,32 +77,110 @@ def test_bold_font_output():
 @image_comparison(['bold_font_output_with_none_fonttype.svg'])
 def test_bold_font_output_with_none_fonttype():
     plt.rcParams['svg.fonttype'] = 'none'
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, ax = plt.subplots()
     ax.plot(np.arange(10), np.arange(10))
     ax.set_xlabel('nonbold-xlabel')
     ax.set_ylabel('bold-ylabel', fontweight='bold')
     ax.set_title('bold-title', fontweight='bold')
 
 
-@needs_usetex
-def test_missing_psfont(monkeypatch):
-    """An error is raised if a TeX font lacks a Type-1 equivalent"""
+@check_figures_equal(tol=20)
+def test_rasterized(fig_test, fig_ref):
+    t = np.arange(0, 100) * (2.3)
+    x = np.cos(t)
+    y = np.sin(t)
 
-    def psfont(*args, **kwargs):
-        return dviread.PsFont(texname='texfont', psname='Some Font',
-                              effects=None, encoding=None, filename=None)
+    ax_ref = fig_ref.subplots()
+    ax_ref.plot(x, y, "-", c="r", lw=10)
+    ax_ref.plot(x+1, y, "-", c="b", lw=10)
 
-    monkeypatch.setattr(dviread.PsfontsMap, '__getitem__', psfont)
-    mpl.rc('text', usetex=True)
-    fig, ax = plt.subplots()
-    ax.text(0.5, 0.5, 'hello')
-    with tempfile.TemporaryFile() as tmpfile, pytest.raises(ValueError):
-        fig.savefig(tmpfile, format='svg')
+    ax_test = fig_test.subplots()
+    ax_test.plot(x, y, "-", c="r", lw=10, rasterized=True)
+    ax_test.plot(x+1, y, "-", c="b", lw=10, rasterized=True)
+
+
+@check_figures_equal()
+def test_rasterized_ordering(fig_test, fig_ref):
+    t = np.arange(0, 100) * (2.3)
+    x = np.cos(t)
+    y = np.sin(t)
+
+    ax_ref = fig_ref.subplots()
+    ax_ref.set_xlim(0, 3)
+    ax_ref.set_ylim(-1.1, 1.1)
+    ax_ref.plot(x, y, "-", c="r", lw=10, rasterized=True)
+    ax_ref.plot(x+1, y, "-", c="b", lw=10, rasterized=False)
+    ax_ref.plot(x+2, y, "-", c="g", lw=10, rasterized=True)
+    ax_ref.plot(x+3, y, "-", c="m", lw=10, rasterized=True)
+
+    ax_test = fig_test.subplots()
+    ax_test.set_xlim(0, 3)
+    ax_test.set_ylim(-1.1, 1.1)
+    ax_test.plot(x, y, "-", c="r", lw=10, rasterized=True, zorder=1.1)
+    ax_test.plot(x+2, y, "-", c="g", lw=10, rasterized=True, zorder=1.3)
+    ax_test.plot(x+3, y, "-", c="m", lw=10, rasterized=True, zorder=1.4)
+    ax_test.plot(x+1, y, "-", c="b", lw=10, rasterized=False, zorder=1.2)
+
+
+def test_count_bitmaps():
+    def count_tag(fig, tag):
+        with BytesIO() as fd:
+            fig.savefig(fd, format='svg')
+            buf = fd.getvalue().decode()
+        return buf.count(f"<{tag}")
+
+    # No rasterized elements
+    fig1 = plt.figure()
+    ax1 = fig1.add_subplot(1, 1, 1)
+    ax1.set_axis_off()
+    for n in range(5):
+        ax1.plot([0, 20], [0, n], "b-", rasterized=False)
+    assert count_tag(fig1, "image") == 0
+    assert count_tag(fig1, "path") == 6  # axis patch plus lines
+
+    # rasterized can be merged
+    fig2 = plt.figure()
+    ax2 = fig2.add_subplot(1, 1, 1)
+    ax2.set_axis_off()
+    for n in range(5):
+        ax2.plot([0, 20], [0, n], "b-", rasterized=True)
+    assert count_tag(fig2, "image") == 1
+    assert count_tag(fig2, "path") == 1  # axis patch
+
+    # rasterized can't be merged without affecting draw order
+    fig3 = plt.figure()
+    ax3 = fig3.add_subplot(1, 1, 1)
+    ax3.set_axis_off()
+    for n in range(5):
+        ax3.plot([0, 20], [n, 0], "b-", rasterized=False)
+        ax3.plot([0, 20], [0, n], "b-", rasterized=True)
+    assert count_tag(fig3, "image") == 5
+    assert count_tag(fig3, "path") == 6
+
+    # rasterized whole axes
+    fig4 = plt.figure()
+    ax4 = fig4.add_subplot(1, 1, 1)
+    ax4.set_axis_off()
+    ax4.set_rasterized(True)
+    for n in range(5):
+        ax4.plot([0, 20], [n, 0], "b-", rasterized=False)
+        ax4.plot([0, 20], [0, n], "b-", rasterized=True)
+    assert count_tag(fig4, "image") == 1
+    assert count_tag(fig4, "path") == 1
+
+    # rasterized can be merged, but inhibited by suppressComposite
+    fig5 = plt.figure()
+    fig5.suppressComposite = True
+    ax5 = fig5.add_subplot(1, 1, 1)
+    ax5.set_axis_off()
+    for n in range(5):
+        ax5.plot([0, 20], [0, n], "b-", rasterized=True)
+    assert count_tag(fig5, "image") == 5
+    assert count_tag(fig5, "path") == 1  # axis patch
 
 
 # Use Computer Modern Sans Serif, not Helvetica (which has no \textwon).
-@pytest.mark.style('default')
+@mpl.style.context('default')
 @needs_usetex
 def test_unicode_won():
     fig = Figure()
@@ -116,15 +188,17 @@ def test_unicode_won():
 
     with BytesIO() as fd:
         fig.savefig(fd, format='svg')
-        buf = fd.getvalue().decode('ascii')
+        buf = fd.getvalue()
 
-    won_id = 'Computer_Modern_Sans_Serif-142'
-    assert re.search(r'<path d=(.|\s)*?id="{0}"/>'.format(won_id), buf)
-    assert re.search(r'<use[^/>]*? xlink:href="#{0}"/>'.format(won_id), buf)
+    tree = xml.etree.ElementTree.fromstring(buf)
+    ns = 'http://www.w3.org/2000/svg'
+    won_id = 'SFSS3583-8e'
+    assert len(tree.findall(f'.//{{{ns}}}path[@d][@id="{won_id}"]')) == 1
+    assert f'#{won_id}' in tree.find(f'.//{{{ns}}}use').attrib.values()
 
 
 def test_svgnone_with_data_coordinates():
-    plt.rcParams['svg.fonttype'] = 'none'
+    plt.rcParams.update({'svg.fonttype': 'none', 'font.stretch': 'condensed'})
     expected = 'Unlikely to appear by chance'
 
     fig, ax = plt.subplots()
@@ -137,9 +211,7 @@ def test_svgnone_with_data_coordinates():
         fd.seek(0)
         buf = fd.read().decode()
 
-    assert expected in buf
-    for prop in ["family", "weight", "stretch", "style", "size"]:
-        assert f"font-{prop}:" in buf
+    assert expected in buf and "condensed" in buf
 
 
 def test_gid():
@@ -180,7 +252,7 @@ def test_gid():
         # we need to exclude certain objects which will not appear in the svg
         if isinstance(obj, OffsetBox):
             return False
-        if isinstance(obj, plt.Text):
+        if isinstance(obj, Text):
             if obj.get_text() == "":
                 return False
             elif obj.axes is None:
@@ -218,17 +290,17 @@ def test_url():
 
     # collections
     s = ax.scatter([1, 2, 3], [4, 5, 6])
-    s.set_urls(['http://example.com/foo', 'http://example.com/bar', None])
+    s.set_urls(['https://example.com/foo', 'https://example.com/bar', None])
 
     # Line2D
     p, = plt.plot([1, 3], [6, 5])
-    p.set_url('http://example.com/baz')
+    p.set_url('https://example.com/baz')
 
     b = BytesIO()
     fig.savefig(b, format='svg')
     b = b.getvalue()
     for v in [b'foo', b'bar', b'baz']:
-        assert b'http://example.com/' + v in b
+        assert b'https://example.com/' + v in b
 
 
 def test_url_tick(monkeypatch):
@@ -237,13 +309,13 @@ def test_url_tick(monkeypatch):
     fig1, ax = plt.subplots()
     ax.scatter([1, 2, 3], [4, 5, 6])
     for i, tick in enumerate(ax.yaxis.get_major_ticks()):
-        tick.set_url(f'http://example.com/{i}')
+        tick.set_url(f'https://example.com/{i}')
 
     fig2, ax = plt.subplots()
     ax.scatter([1, 2, 3], [4, 5, 6])
     for i, tick in enumerate(ax.yaxis.get_major_ticks()):
-        tick.label1.set_url(f'http://example.com/{i}')
-        tick.label2.set_url(f'http://example.com/{i}')
+        tick.label1.set_url(f'https://example.com/{i}')
+        tick.label2.set_url(f'https://example.com/{i}')
 
     b1 = BytesIO()
     fig1.savefig(b1, format='svg')
@@ -254,7 +326,7 @@ def test_url_tick(monkeypatch):
     b2 = b2.getvalue()
 
     for i in range(len(ax.yaxis.get_major_ticks())):
-        assert f'http://example.com/{i}'.encode('ascii') in b1
+        assert f'https://example.com/{i}'.encode('ascii') in b1
     assert b1 == b2
 
 
@@ -353,7 +425,7 @@ def test_svg_metadata():
         **{k: [f'{k} bar', f'{k} baz'] for k in multi_value},
     }
 
-    fig, ax = plt.subplots()
+    fig = plt.figure()
     with BytesIO() as fd:
         fig.savefig(fd, format='svg', metadata=metadata)
         buf = fd.getvalue().decode()
@@ -396,3 +468,62 @@ def test_svg_metadata():
     values = [node.text for node in
               rdf.findall(f'./{CCNS}Work/{DCNS}subject/{RDFNS}Bag/{RDFNS}li')]
     assert values == metadata['Keywords']
+
+
+@image_comparison(["multi_font_aspath.svg"], tol=1.8)
+def test_multi_font_type3():
+    fp = fm.FontProperties(family=["WenQuanYi Zen Hei"])
+    if Path(fm.findfont(fp)).name != "wqy-zenhei.ttc":
+        pytest.skip("Font may be missing")
+
+    plt.rc('font', family=['DejaVu Sans', 'WenQuanYi Zen Hei'], size=27)
+    plt.rc('svg', fonttype='path')
+
+    fig = plt.figure()
+    fig.text(0.15, 0.475, "There are 几个汉字 in between!")
+
+
+@image_comparison(["multi_font_astext.svg"])
+def test_multi_font_type42():
+    fp = fm.FontProperties(family=["WenQuanYi Zen Hei"])
+    if Path(fm.findfont(fp)).name != "wqy-zenhei.ttc":
+        pytest.skip("Font may be missing")
+
+    fig = plt.figure()
+    plt.rc('svg', fonttype='none')
+
+    plt.rc('font', family=['DejaVu Sans', 'WenQuanYi Zen Hei'], size=27)
+    fig.text(0.15, 0.475, "There are 几个汉字 in between!")
+
+
+@pytest.mark.parametrize('metadata,error,message', [
+    ({'Date': 1}, TypeError, "Invalid type for Date metadata. Expected str"),
+    ({'Date': [1]}, TypeError,
+     "Invalid type for Date metadata. Expected iterable"),
+    ({'Keywords': 1}, TypeError,
+     "Invalid type for Keywords metadata. Expected str"),
+    ({'Keywords': [1]}, TypeError,
+     "Invalid type for Keywords metadata. Expected iterable"),
+    ({'Creator': 1}, TypeError,
+     "Invalid type for Creator metadata. Expected str"),
+    ({'Creator': [1]}, TypeError,
+     "Invalid type for Creator metadata. Expected iterable"),
+    ({'Title': 1}, TypeError,
+     "Invalid type for Title metadata. Expected str"),
+    ({'Format': 1}, TypeError,
+     "Invalid type for Format metadata. Expected str"),
+    ({'Foo': 'Bar'}, ValueError, "Unknown metadata key"),
+    ])
+def test_svg_incorrect_metadata(metadata, error, message):
+    with pytest.raises(error, match=message), BytesIO() as fd:
+        fig = plt.figure()
+        fig.savefig(fd, format='svg', metadata=metadata)
+
+
+def test_svg_escape():
+    fig = plt.figure()
+    fig.text(0.5, 0.5, "<\'\"&>", gid="<\'\"&>")
+    with BytesIO() as fd:
+        fig.savefig(fd, format='svg')
+        buf = fd.getvalue().decode()
+        assert '&lt;&apos;&quot;&amp;&gt;"' in buf
